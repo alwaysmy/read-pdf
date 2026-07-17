@@ -1,0 +1,9 @@
+interface:
+  display_name: "Read PDF"
+  short_description: "Extract text from PDFs with OCR fallback and layout analysis"
+  icon_small: "./assets/read-pdf.svg"
+  icon_large: "./assets/read-pdf.svg"
+  default_prompt: "Use $read-pdf to extract text from a PDF: <path>"
+
+policy:
+  allow_implicit_invocation: true
