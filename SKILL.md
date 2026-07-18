@@ -1,16 +1,22 @@
 ---
 name: read-pdf
 description: >-
-  Extract text from PDF files. Auto-detects text vs image PDFs. Text PDFs use
-  pdfmux + pdfplumber for structure and accuracy. Image PDFs use PaddleOCR
-  Hybrid as primary engine, with GLM-OCR Q8_0 as fallback and Qwen for knowledge
-  audit. Default output is Markdown (.md); use --json for JSON, --text-only for
-  plain text (.txt).
+  Extract text, tables, and structured data from PDF files. Use for reading,
+  analyzing, or converting PDF documents. Supports text-layer PDFs (pdfmux +
+  pdfplumber) and image/scanned PDFs (PaddleOCR Hybrid). Handles OCR, table
+  extraction, formula recognition, and knowledge audit. Default output is
+  Markdown (.md); use --json for JSON, --text-only for plain text (.txt).
 when_to_use: >-
-  When the user needs to read, extract, parse, or convert a PDF document.
-  Triggers on: PDF path, "读PDF", "提取文档", "read this PDF", "parse PDF",
-  "convert PDF", "OCR this", 文档提取, PDF转换. Also when an agent needs to
-  ingest PDF content.
+  When the user provides a PDF file and wants to read, extract, analyze, or
+  convert its content. Triggers on: PDF file path, "读PDF", "提取文档",
+  "识别PDF", "转文字", "扫描件", "提取表格", "PDF转Markdown", "看看文档",
+  "看看手册", "看看PDF", "read this PDF", "parse PDF", "OCR this", 文档提取,
+  PDF转换, 文档分析, 表格提取, 手册提取, 说明书提取, 合同提取, 发票提取,
+  简历提取, 论文提取, 报告提取, "分析文档", "读取文件", "提取内容",
+  "convert PDF", "analyze document", "extract table", "scanned PDF",
+  "OCR document", "read manual", "extract datasheet", "parse invoice",
+  "extract resume", "read paper". Also when an agent needs to ingest,
+  understand, or extract structured data from any PDF document.
 user-invocable: true
 allowed-tools:
   - PowerShell
