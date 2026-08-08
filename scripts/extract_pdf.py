@@ -447,6 +447,31 @@ def make_output_folder(pdf_name, suffix, output_dir=None, page_suffix=""):
 
 
 # ---------------------------------------------------------------------------
+# Extraction cache (P3: Kimi 抽取-注入解耦 — 缓存复用避免重复 OCR)
+# ---------------------------------------------------------------------------
+def cache_get(cache_dir, key):
+    """Read cached extraction if exists, else None."""
+    path = cache_dir / f"{key}.txt"
+    if path.exists():
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+    return None
+
+
+def cache_put(cache_dir, key, text):
+    """Write extraction result to cache (timestamps in filename to avoid overwrites)."""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"{key}.txt"
+        path.write_text(text, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def parse_args():
@@ -472,6 +497,8 @@ def parse_args():
     p.add_argument("--layout-only", action="store_true", help="Layout analysis only: skip OCR, just output layout JSON + crops (implies --layout)")
     p.add_argument("--layout-min-score", type=float, default=0.3, help="Layout detection min score (default 0.3)")
     p.add_argument("--layout-device", default="cpu", choices=["cpu", "gpu"], help="Layout detection device (default cpu, GPU 被 OCR 服务占用时用 CPU)")
+    p.add_argument("--no-cache", action="store_true", help="Disable extraction cache (default: cache enabled)")
+    p.add_argument("--refresh-cache", action="store_true", help="Force re-OCR and refresh cache (ignore existing cache)")
     # --- Deprecated ---
     p.add_argument("--vl", action="store_true", help="[DEPRECATED] PaddleOCRVL native (use --hybrid instead)")
     p.add_argument("--llama", action="store_true", help="[DEPRECATED] PaddleOCR-VL GGUF (use --hybrid instead)")
@@ -797,21 +824,35 @@ def main():
                     pix.save(tmp_path)
                     tmp_paths.append(tmp_path)
 
-                # Extract batch
+                # Extract batch (with cache if enabled)
+                use_cache = not args.no_cache and not args.refresh_cache
+                cache_dir = None
+                if use_cache and engine != "audit":
+                    cache_dir = out_folder / ".cache"
                 if len(batch) > 1:
+                    # Multi-page (audit) — no cache
                     t0 = time.time()
                     text, stats = extract_qwen_multi(tmp_paths)
                     dt = time.time() - t0
                 else:
-                    text, stats = "", {}
-                    for attempt in range(3):
-                        t0 = time.time()
-                        text, stats = extract_fn(tmp_paths[0])
-                        dt = time.time() - t0
-                        if text:
-                            break
-                        if attempt < 2:
-                            time.sleep(2)
+                    page_num = batch[0]
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_d{args.dpi}"
+                    cached = cache_get(cache_dir, key) if cache_dir else None
+                    if cached is not None:
+                        text, stats = cached, {"cache": "hit"}
+                        dt = 0.0
+                    else:
+                        text, stats = "", {}
+                        for attempt in range(3):
+                            t0 = time.time()
+                            text, stats = extract_fn(tmp_paths[0])
+                            dt = time.time() - t0
+                            if text:
+                                break
+                            if attempt < 2:
+                                time.sleep(2)
+                        if text and cache_dir:
+                            cache_put(cache_dir, key, text)
             finally:
                 for tp in tmp_paths:
                     try:
@@ -836,6 +877,8 @@ def main():
                     page_info["confidence"] = stats["confidence"]
                 if stats.get("error"):
                     page_info["error"] = stats["error"]
+                if stats.get("cache"):
+                    page_info["cache"] = "hit"
                 pages_data.append(page_info)
 
             progress = (i + len(batch)) * 100 // requested_pages
