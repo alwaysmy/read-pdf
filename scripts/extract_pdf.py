@@ -762,6 +762,9 @@ def main():
             "dpi": args.dpi,
             "min_score": args.layout_min_score,
             "total_time": round(time.time() - t_start, 1),
+            "layout_path": str(layout_path),
+            "total_blocks": sum(len(p["blocks"]) for p in all_pages),
+            "total_crops": crop_index,
             "pages": all_pages,
         }
         with open(str(layout_path), "w", encoding="utf-8") as f:

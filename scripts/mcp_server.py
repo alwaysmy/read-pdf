@@ -67,8 +67,8 @@ def extract_pdf(pdf, pages=None, engine=None, source=None, dpi=None, output_dir=
         "status": result.get("status"),
         "output": result.get("file"),
         "engine": result.get("engine"),
-        "pages": result.get("total_pages"),
-        "chars": result.get("total_chars"),
+        "size_bytes": result.get("size_bytes"),
+        "tables": result.get("total_tables"),
         "time_s": result.get("time_s"),
     }
 
@@ -85,11 +85,11 @@ def layout_pdf(pdf, pages=None, device=None, output_dir=None):
     result = _post("/layout", body)
     if "error" in result:
         return result
-    blocks = sum(len(p.get("blocks", [])) for p in result.get("pages", []))
     return {
         "status": result.get("status"),
         "layout_json": result.get("layout_path"),
-        "blocks": blocks,
+        "blocks": result.get("total_blocks"),
+        "crops": result.get("total_crops"),
         "time_s": result.get("time_s"),
     }
 

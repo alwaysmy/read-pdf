@@ -28,13 +28,16 @@ def main():
 
     # 2. extract_pdf（文本 PDF 1-2 页）
     r = mcp_server.extract_pdf(TEXT_PDF, pages="1-2")
-    print(f"2. extract_pdf: status={r.get('status')} output={r.get('output')} chars={r.get('chars')}")
+    print(f"2. extract_pdf: status={r.get('status')} output={r.get('output')} size={r.get('size_bytes')} tables={r.get('tables')}")
     assert r.get("status") == "ok", f"extract 失败: {r}"
+    assert r.get("size_bytes", 0) > 0, f"size_bytes 缺失: {r}"
 
     # 3. layout_pdf（扫描 PDF 1 页 gpu）
     r = mcp_server.layout_pdf(SCAN_PDF, pages="20", device="gpu")
-    print(f"3. layout_pdf: status={r.get('status')} blocks={r.get('blocks')}")
+    print(f"3. layout_pdf: status={r.get('status')} blocks={r.get('blocks')} crops={r.get('crops')} json={r.get('layout_json')}")
     assert r.get("status") == "ok", f"layout 失败: {r}"
+    assert r.get("blocks", 0) > 0, f"blocks 缺失: {r}"
+    assert r.get("layout_json"), f"layout_json 缺失: {r}"
 
     # 4. 错误路径（不存在的 pdf）
     r = mcp_server.extract_pdf("Z:/nonexistent.pdf")
