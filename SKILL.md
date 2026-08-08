@@ -122,7 +122,8 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 | `/read-pdf file.pdf` | `python $HOME/.agents/skills/read-pdf/scripts/extract_pdf.py file.pdf` |
 | `--pages 5-10` | `--pages 5-10`（物理页码，1-based，含首尾） |
 | `--hybrid` | `--hybrid`（强制 PaddleOCR Hybrid） |
-| `--glm` | `--glm`（备用：GLM-OCR Q8_0） |
+| `--dsocr` | `--dsocr`（DeepSeek-OCR，目录/列表/纯文本扫描件快 27-43%） |
+| `--glm` | `--glm`（GLM-OCR Q8_0，公式/数值表格保真） |
 | `--audit` | `--audit`（同 `--html`） |
 | `--html` | `--html`（同 `--audit`） |
 | `--json` | `--json` |
@@ -134,6 +135,13 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 | `--no-table` | `--no-table`（跳过 pdfplumber 表格） |
 | `--pdfmux` | `--pdfmux`（强制启用 pdfmux，默认 auto） |
 | `--no-pdfmux` | `--no-pdfmux`（禁用 pdfmux） |
+| `--layout` | `--layout`（版面检测：PP-DocLayoutV3 定位表格/示意图 → 裁剪存图 + 布局 JSON） |
+| `--layout-only` | `--layout-only`（只出布局 JSON + 裁剪图，不 OCR） |
+| `--layout-min-score N` | `--layout-min-score N`（版面检测最小置信度，默认 0.3） |
+| `--layout-device cpu\|gpu` | `--layout-device`（版面检测设备，默认 cpu，GPU 被 OCR 占用时可兜底） |
+| `--no-cache` | `--no-cache`（禁用抽取缓存，默认开启） |
+| `--refresh-cache` | `--refresh-cache`（强制重跑 OCR 并刷新缓存） |
+| `--source local\|cloud` | `--source`（临时切换服务源；云源需 token，仅 hybrid 支持 cloud） |
 
 输出默认写入当前目录的 `{pdf_name}_output/{pdf_name}.md`（`{pdf_name}` = PDF 文件名去 `.pdf`，如 `report.pdf` → `report_output/report.md`）。用 `--output-dir DIR` 可改输出目录。脚本跑完后用 Read 工具打开此文件判断提取质量。
 `--pages` 用物理页码（PDF 文件内第 N 页），不是印刷页码。
@@ -146,7 +154,8 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 |------|:--:|:--:|------|--------|
 | **pdfmux + pdfplumber** | **~0.85s** | **0** | Markdown+文本层 | **默认（文本 PDF）** |
 | **PaddleOCR Hybrid** | **~2.5s** | **~2.4GB** | Markdown+HTML+bbox | **默认（图像 PDF）** |
-| GLM-OCR Q8_0 | ~4s | ~2.5GB | .md+LaTeX+编号 | 备用/验证 |
+| GLM-OCR Q8_0 | ~2.1s | ~2.5GB | .md+LaTeX+编号 | 公式/数值表格保真 |
+| DeepSeek-OCR Q8_0（`--dsocr`） | ~1.5s | ~3.9GB | Markdown+结构化列表 | 目录/列表/纯文本扫描件（快 27-43%） |
 | Qwen 35B | ~48s | ~5.1GB | HTML | 知识审校 |
 
 ### 关键引擎说明
@@ -155,6 +164,16 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 
 `--audit` 固定用 "正确排版输出这一页内容，用HTML格式，不要任何解释和前言。" 做 HTML 提取。但对于审校场景，agent 可以自己构造 prompt 发给 Qwen（/v1/chat/completions），把原页图片 + OCR 提取文本一起喂进去做交叉验证。prompt 怎么写取决于你要验证什么——表格对齐、公式正确性、术语是否误读，不强求固定格式。
 **PaddleOCR Hybrid 是默认引擎。** 版面检测 + VL 识别一体化，能处理文本、表格、公式、多栏排版。不要单独用裸 PaddleOCR-VL GGUF，缺了 Python 管线的版面检测（layout detection → block label → bbox），等于自废武功。
+
+**DeepSeek-OCR（`--dsocr`）是速度备选引擎，注意幻觉风险。** 实测比 GLM-OCR 快 27-43%（文本层越多越快），是**目录/列表/纯文本扫描件的结构化强者**（能把目录完整还原成 Markdown 表格，GLM 会漏项）；但**数值表格/公式是弱项**——会丢公式下标、可能整行重复产生幻觉。路由建议：
+- 目录页、列表页、纯文本扫描件 → `--dsocr`（快 + 结构好）
+- 数学公式、数值表格 → `--glm`（保真）
+
+**`--layout` 版面检测模式（PP-DocLayoutV3）。** 定位表格/示意图区域 → 按 bbox 裁剪存图 → 输出 `{name}_output/layout/{name}_layout.json`（label+bbox+score+page）+ `layout/crops/*.png`。用途：PDF→EPUB 重排、元素提取、版面分析。默认 `--layout-device cpu`（GPU 被 OCR 占用时兜底）。
+
+**抽取缓存（默认开启）。** 每页 OCR 结果缓存到 `{name}_output/.cache/`（key 含 PDF 名/页码/引擎/源/DPI，自动失效），二次处理直接读缓存免 OCR（实测 total_time 0.0s）。`--no-cache` 禁用，`--refresh-cache` 强制重跑。
+
+**服务模式（本体 HTTP + MCP）。** 可独立运行：`python scripts/server.py`（默认 127.0.0.1:8123，首次启动自动生成 Bearer key 存 `~/.readpdf/key`）→ MCP 客户端经 `mcp_server.py` 接入，工具 `extract_pdf`/`layout_pdf`/`list_engines`。详见 `docs/server-design_20260808.md`。配置（引擎/双源/路由）集中在 `engine_config.yaml`，本机覆盖用 `engine_config.local.yaml`。
 
 ### 默认流程
 
@@ -178,6 +197,9 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 - **证据驱动** — 参数和定位基于实测
 
 ## 服务启动
+
+> 引擎服务由脚本自动管理（`server_manager.py` 按 `engine_config.yaml` 启停，冷启动等 /health 就绪）。
+> 以下手动命令仅作参考/排障（路径来自本机配置，其他机器以 `engine_config.local.yaml` 为准）。
 
 ### GLM-OCR Q8_0（备用引擎，端口 12335）
 
