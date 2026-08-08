@@ -31,8 +31,8 @@ scripts/
   extract_pdf.py          # 业务主流程（CLI、渲染、路由、输出、缓存）—— 不碰进程/端口细节
   engines.py              # [新] 引擎注册表 + 统一 API 调用层（只认 endpoint URL）
   server_manager.py       # [新] 本地服务生命周期（llama-server 启停）；云端引擎跳过
-  engine_config.json      # [新] 引擎配置（本地默认 + 云端示例；可被本机覆盖文件补充）
-  engine_config.local.json # [可选, gitignore] 本机私有覆盖（换路径/端口/密钥，不提交）
+  engine_config.yaml      # [新] 引擎配置 YAML（本地默认 + 云端示例；可被本机覆盖文件补充）
+  engine_config.local.yaml # [可选, gitignore] 本机私有覆盖（换路径/端口/密钥，不提交）
 ```
 
 ### 数据流
@@ -55,89 +55,140 @@ engines.call("glm", img, prompt)
 
 ---
 
-## 3. engine_config.json 格式设计
+## 3. engine_config.yaml 格式设计（YAML）
 
-```json
-{
-  "$schema": "./engine_config.schema.json",
-  "engines": {
-    "glm": {
-      "mode": "local",
-      "endpoint": "http://127.0.0.1:12335/v1",
-      "api_key": "12345",
-      "prompt": "Text Recognition:",
-      "max_tokens": 4096,
-      "message_order": "image-first",
-      "output_format": "markdown",   # 返回值格式: text|markdown|html —— 调用方按此处理
-      "server": {
-        "exe": "llama-server.exe",
-        "model": "D:/llm/ggml-org/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf",
-        "mmproj": "D:/llm/ggml-org/GLM-OCR-GGUF/mmproj-GLM-OCR-Q8_0.gguf",
-        "port": 12335,
-        "args": ["-ngl","100","--no-mmap","--no-warmup","-c","16384","-t","8","-np","1"]
-      }
-    },
-    "dsocr": {
-      "mode": "local",
-      "endpoint": "http://127.0.0.1:12337/v1",
-      "api_key": "12345",
-      "prompt": "OCR markdown",
-      "max_tokens": 8192,
-      "message_order": "text-first",
-      "output_format": "markdown",
-      "server": { ... }
-    },
-    "baidu_ocr": {
-      "mode": "cloud",
-      "endpoint": "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic",
-      "api_key": "${BAIDU_API_KEY}",
-      "api_secret": "${BAIDU_SECRET_KEY}",
-      "auth_endpoint": "https://aip.baidubce.com/oauth/2.0/token",
-      "output_format": "text",        # 百度 OCR 返回纯文本行（无 Markdown/公式）
-      "server": null
-    },
-    "cloud_glm": {
-      "mode": "cloud",
-      "endpoint": "https://api.bigmodel.cn/api/paas/v4/chat/completions",
-      "api_key": "${ZHIPU_API_KEY}",
-      "output_format": "markdown",
-      "server": null
-    }
-  },
-  "defaults": {
-    "llama_dir": "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"
-  }
-}
+**选型理由**：与 `agents/openai.yaml` 统一、支持注释、嵌套引擎配置可读性好（对比 JSON/TOML 详见 §3.4）。
+
+```yaml
+# read-pdf 引擎配置
+defaults:
+  llama_dir: "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"   # llama-server 目录
+
+engines:
+  hybrid:                 # PaddleOCR Hybrid — 图像 PDF 默认（质量最稳）
+    mode: local
+    endpoint: "http://127.0.0.1:12336/v1"
+    api_key: "12345"
+    prompt: ""
+    max_tokens: 4096
+    message_order: image-first
+    output_format: markdown   # text|markdown|html
+    server:                   # 仅 local 引擎有；cloud 为 null
+      exe: llama-server.exe
+      model: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
+      mmproj: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+      port: 12336
+      args: ["-ngl","100","--no-mmap","--no-warmup","-c","32768","-t","8","-np","1"]
+
+  glm:                    # GLM-OCR Q8_0 — 公式/数值表格保真
+    mode: local
+    endpoint: "http://127.0.0.1:12335/v1"
+    api_key: "12345"
+    prompt: "Text Recognition:"
+    max_tokens: 4096
+    message_order: image-first
+    output_format: markdown
+    server:
+      exe: llama-server.exe
+      model: "D:/llm/ggml-org/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf"
+      mmproj: "D:/llm/ggml-org/GLM-OCR-GGUF/mmproj-GLM-OCR-Q8_0.gguf"
+      port: 12335
+      args: ["-ngl","100","--no-mmap","--no-warmup","-c","16384","-t","8","-np","1"]
+
+  dsocr:                  # DeepSeek-OCR — 纯文本扫描件提速（快 45%）
+    mode: local
+    endpoint: "http://127.0.0.1:12337/v1"
+    api_key: "12345"
+    prompt: "OCR markdown"
+    max_tokens: 8192
+    message_order: text-first    # DeepSeek 要求 text 在前
+    output_format: markdown
+    server:
+      exe: llama-server.exe
+      model: "D:/llm/ggml-org/DeepSeek-OCR/DeepSeek-OCR-Q8_0.gguf"
+      mmproj: "D:/llm/ggml-org/DeepSeek-OCR/mmproj-DeepSeek-OCR-Q8_0.gguf"
+      port: 12337
+      args: ["-ngl","100","--no-mmap","--no-warmup","-c","8192","-t","8","-np","1"]
+
+  baidu_ocr:              # 百度 OCR — 云引擎（验证云模式）
+    mode: cloud
+    endpoint: "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
+    api_key: "${BAIDU_API_KEY}"       # 环境变量注入，不进仓库
+    api_secret: "${BAIDU_SECRET_KEY}"
+    auth_endpoint: "https://aip.baidubce.com/oauth/2.0/token"
+    output_format: text               # 纯文本行（无 Markdown/公式）
+    server: null
+
+  cloud_glm:              # 云端 GLM（配置示例，本期不启用）
+    mode: cloud
+    endpoint: "https://api.bigmodel.cn/api/paas/v4/chat/completions"
+    api_key: "${ZHIPU_API_KEY}"
+    output_format: markdown
+    server: null
+
+# 引擎路由：默认排序（agent 可按场景覆盖）
+routing:
+  text_pdf: ["pdfmux", "pdfplumber"]        # 文本层 PDF
+  image_pdf: ["hybrid", "glm", "dsocr"]     # 图像 PDF 默认优先级
+  image_pdf_cloud: ["hybrid", "baidu_ocr"]  # 无 GPU 时的云兜底链（可选启用）
+  quality_fallback: ["glm"]                 # 公式/表格质量兜底
 ```
 
-### 关键设计点
+### 3.1 关键设计点
 
 | 项 | 说明 |
 |---|---|
 | `mode: local\|cloud` | local 需 `server_manager` 启服务；cloud 直接请求远程，**不发本地进程** |
-| `message_order: image-first\|text-first` | GLM 系 image 在前；DeepSeek-OCR 系 text 在前（现有 `http_extract_text_first` 的逻辑） |
-| `output_format: text\|markdown\|html` | 返回值格式声明。调用方按此处理：markdown/html 直接落盘，text 需自行转 md（如百度 OCR 纯文本行） |
-| `api_key: ${ENV_VAR}` | 云端密钥从环境变量读，不进仓库（安全） |
+| `message_order: image-first\|text-first` | GLM 系 image 在前；DeepSeek-OCR 系 text 在前 |
+| `output_format: text\|markdown\|html` | 返回值格式。text（如百度 OCR）需自行转 md |
+| `api_key: ${ENV_VAR}` | 云端密钥从环境变量读，不进仓库 |
 | `server: null` | 云端引擎无本地服务段 |
-| `engine_config.local.json` | 本机覆盖：合并进主配置，改路径/端口/加引擎不提交 |
+| `routing` | 默认引擎排序配置化；`image_pdf` 默认仍 hybrid |
 | `LLAMA_DIR` | 移到 `defaults.llama_dir`，`server_manager` 用它拼 exe 路径 |
 
-### 本机覆盖示例（engine_config.local.json，gitignore）
+### 3.2 默认引擎排序（解耦后与现状对比）
 
-```json
-{
-  "engines": {
-    "glm": { "server": { "model": "D:/my/models/GLM-OCR-Q8_0.gguf" } }
-  }
-}
+| 场景 | 现状（代码写死） | 解耦后（routing 配置） |
+|---|---|---|
+| 文本 PDF | pdfmux+pdfplumber | `routing.text_pdf`（默认不变） |
+| 图像 PDF | **hybrid**（代码写死） | `routing.image_pdf`（默认仍 hybrid，但可配） |
+| 无 GPU 机器 | 无云兜底 | `routing.image_pdf_cloud` = hybrid→baidu_ocr 自动降级 |
+| 公式/表格质量 | agent 手动 `--glm` | `routing.quality_fallback` = glm |
+
+**原则不变**：默认 Hybrid（质量最稳），routing 只是把可选顺序暴露为配置，agent 决策 + 配置兜底结合。
+
+### 3.3 本机覆盖（engine_config.local.yaml，gitignore）
+
+```yaml
+# 本机私有覆盖（不提交，改路径/端口/密钥）
+engines:
+  glm:
+    server:
+      model: "D:/my/models/GLM-OCR-Q8_0.gguf"
+      port: 12335
 ```
+
+- 提交 `engine_config.local.example.yaml` 作为模板（含占位符，不含真实密钥）
+- 加载顺序：`engine_config.yaml` → 合并 `engine_config.local.yaml`（本地优先）
+
+### 3.4 配置格式选型（YAML vs JSON vs TOML）
+
+| 维度 | JSON | YAML | TOML |
+|---|---|---|---|
+| 注释 | ❌ | ✅ | ✅ |
+| 嵌套引擎配置 | ✅ | ✅ 最佳 | ⚠️ 层级深难写 |
+| Python 依赖 | 标准库 | PyYAML（paddle 生态已有） | tomllib（3.11+） |
+| 与 agents/openai.yaml 统一 | ❌ | ✅ | ❌ |
+| 可读性 | 一般 | 最好 | 好 |
+
+**结论**：YAML（与现有 openai.yaml 统一 + 注释 + 嵌套友好）。
 
 ---
 
 ## 4. 模块职责
 
 ### engines.py
-- `load_config()`：读 `engine_config.json` + 合并 `engine_config.local.json`（本地覆盖优先）；`${ENV}` 展开
+- `load_config()`：读 `engine_config.yaml` + 合并 `engine_config.local.yaml`（本地覆盖优先）；`${ENV}` 展开
 - `get(name)`：返回引擎配置（mode/endpoint/prompt/message_order）
 - `call(name, img_path, prompt=None, temp=0)`：
   - local：先 `server_manager.ensure(name)`，再 POST OpenAI 兼容格式
@@ -175,14 +226,14 @@ engines.call("glm", img, prompt)
 - `extract_pdf.py` 的 CLI 参数（`--glm/--hybrid/--dsocr/--audit` 等）**全部不变**
 - 引擎函数签名不变（`extract_glm(img_path) -> (text, stats)`）
 - 老行为默认保持：本地引擎配置与现有 SERVERS 完全一致（同路径同端口）
-- `engine_config.json` 作为新配置源头，`SERVERS` 字典删除后由它接管
+- `engine_config.yaml` 作为新配置源头，`SERVERS` 字典删除后由它接管
 
 ---
 
 ## 7. 实现步骤（待确认后执行）
 
 ```
-1. 建 engine_config.json + engine_config.local.json(示例, gitignore) + engines.py + server_manager.py
+1. 建 engine_config.yaml + engine_config.local.example.yaml(模板, 提交) + engine_config.local.yaml(gitignore) + engines.py + server_manager.py
 2. extract_pdf.py 改造：
    - 删 SERVERS/LLAMA_DIR/http_extract/http_extract_text_first
    - ensure_server 调用 → server_manager
@@ -200,7 +251,7 @@ engines.call("glm", img, prompt)
 | 云端 API 密钥泄露 | `${ENV}` 占位 + `.gitignore` 本地配置；README 提示 |
 | 百度 OCR 无版面/公式 | 定位为文本兜底引擎，SKILL.md 说明适用场景 |
 | 大改动影响现有流程 | 引擎函数签名不变；本地回归测试保底；worktree 分支开发，cherry-pick 决策 |
-| 本机覆盖配置失效 | local.json 显式合并逻辑 + 加载日志打印生效引擎配置 |
+| 本机覆盖配置失效 | local.yaml 显式合并逻辑 + 加载日志打印生效引擎配置 |
 
 ## 8.5 引擎实测对比（2026-08-08，设计依据）
 
@@ -217,8 +268,13 @@ engines.call("glm", img, prompt)
 
 **结论**：公式/表格质量 **Hybrid ≈ GLM > DeepSeek**；速度 **DeepSeek > GLM > Hybrid**。Hybrid 表格带 HTML+bbox 略优，GLM 公式编号格式更规范。默认引擎维持 Hybrid（质量最稳），DS 仅作纯文本扫描件提速备选。
 
-## 9. 待傅师傅确认
+## 9. 决策记录与待办
 
-- [ ] 引擎配置用 JSON（本方案）还是 YAML？（现有 `agents/openai.yaml` 是 YAML，可统一）
-- [ ] 云引擎本期是否只做 baidu_ocr 一个（验证云模式）+ 保留 cloud_glm 配置示例但不启用？
-- [ ] `engine_config.local.json` 放仓库（gitignore）还是放用户目录（如 `~/.config/read-pdf/`）？
+**已决策（2026-08-08）：**
+- ✅ 配置格式：**YAML**（与 agents/openai.yaml 统一，§3.4 有对比）
+- ✅ 云引擎：本期**只做 baidu_ocr 验证**（云模式框架 + 真实调用），cloud_glm 保留配置示例不启用
+- ✅ 本机覆盖：`engine_config.local.yaml` **放仓库但 gitignore**，提交 `engine_config.local.example.yaml` 模板
+- ✅ **配置集中原则**：所有配置（引擎/路由/服务参数）集中在 `read-pdf/` 下，不撒到用户目录——小工具易维护
+
+**待办：**
+- [ ] 傅师傅注册百度智能云 OCR → 提供 API Key/Secret Key → 填入 `engine_config.local.yaml` 或环境变量 → 真测 baidu_ocr 引擎
