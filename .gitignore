@@ -8,9 +8,14 @@ engine_config.local.yaml
 
 # 本地测试产物（目录；bench_*.py 脚本保留提交）
 tests/*_output/
-tests/bench_*/
+tests/bench/
+tests/bench_cloud/
+tests/bench_hybrid2/
+tests/bench_layout_compare/
+tests/bench_multi/
 !tests/bench_*.py
 tests/cov/
 tests/regress/
 tests/regress_cloud/
 tests/*.png
+*.bak
