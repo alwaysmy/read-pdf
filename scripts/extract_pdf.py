@@ -14,6 +14,9 @@ import fitz  # PyMuPDF
 LLAMA_DIR = r"D:\llm\llama-b9830-bin-win-cuda-13.3-x64"
 LLAMA_SERVER = os.path.join(LLAMA_DIR, "llama-server.exe")
 
+# legacy SERVERS（仅供 qwen audit 引擎与 manage_servers.py 使用）
+# 注意: hybrid/glm/dsocr 的服务配置已由 engine_config.yaml 管理（server_manager.py），
+#       此处保留同键条目仅为 manage_servers.py 兼容；改引擎配置请改 engine_config.local.yaml
 SERVERS = {
     "llama": {  # PaddleOCR-VL GGUF — alternative, more context detail
         "port": 12336,
@@ -168,37 +171,6 @@ atexit.register(cleanup)
 
 # ---------------------------------------------------------------------------
 # HTTP extraction backends
-# ---------------------------------------------------------------------------
-def http_extract(port, prompt, img_path, temp=0, max_tokens=4096):
-    """Generic HTTP extraction via llama-server."""
-    with open(img_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
-    import requests
-    try:
-        resp = requests.post(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            headers={"Authorization": "Bearer 12345"},
-            json={
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-                "temperature": temp,
-                "max_tokens": max_tokens,
-            },
-            timeout=180,
-        )
-        if resp.status_code != 200:
-            return "", {"error": f"HTTP {resp.status_code}"}
-        content = resp.json()["choices"][0]["message"]["content"]
-        return content, {}
-    except Exception as e:
-        return "", {"error": str(e)}
-
-
 def _engines_call(name, img_path, prompt=None, source=None):
     """Route engine call through engines.py (config-driven local/cloud)."""
     import engines
@@ -219,36 +191,6 @@ def extract_llama(img_path, source=None):
 def extract_glm(img_path, source=None):
     """GLM-OCR Q8_0 — primary image PDF engine, markdown + LaTeX."""
     return _engines_call("glm", img_path, source=source)
-
-
-def http_extract_text_first(port, prompt, img_path, temp=0, max_tokens=8192):
-    """HTTP extraction for text-first models (DeepSeek-OCR): text BEFORE image."""
-    with open(img_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
-    import requests
-    try:
-        resp = requests.post(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            headers={"Authorization": "Bearer 12345"},
-            json={
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    ],
-                }],
-                "temperature": temp,
-                "max_tokens": max_tokens,
-            },
-            timeout=180,
-        )
-        if resp.status_code != 200:
-            return "", {"error": f"HTTP {resp.status_code}"}
-        content = resp.json()["choices"][0]["message"]["content"]
-        return content, {}
-    except Exception as e:
-        return "", {"error": str(e)}
 
 
 def extract_dsocr(img_path, source=None):
