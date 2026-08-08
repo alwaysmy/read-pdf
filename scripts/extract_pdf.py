@@ -329,12 +329,16 @@ def extract_hybrid(img_path, source=None):
     """PaddleOCR Hybrid — Python layout detection + GGUF VL, structured blocks."""
     try:
         from paddleocr import PaddleOCRVL
-        key = ('llama-cpp-server', 'http://127.0.0.1:12336/v1', '12345')
+        import engines as _eng
+        endpoint, api_key = _eng.get_endpoint("hybrid", source or "local")
+        if api_key is None or (isinstance(api_key, dict) and "__missing__" in api_key):
+            return "", {"error": f"环境变量未设置: {api_key.get('__missing__') if isinstance(api_key, dict) else api_key}"}
+        key = ('llama-cpp-server', endpoint.rstrip('/'), api_key)
         if key not in _vl_instances:
             _vl_instances[key] = PaddleOCRVL(
                 vl_rec_backend='llama-cpp-server',
-                vl_rec_server_url='http://127.0.0.1:12336/v1',
-                vl_rec_api_key='12345',
+                vl_rec_server_url=endpoint.rstrip('/'),
+                vl_rec_api_key=api_key,
                 use_layout_detection=True,
                 use_chart_recognition=False,
                 use_seal_recognition=False,
@@ -673,7 +677,7 @@ def main():
         ensure_server("qwen")
     elif args.hybrid:
         engine = "hybrid"
-        ensure_server("llama")  # PaddleOCR GGUF server needed for hybrid VL
+        ensure_server("hybrid")  # PaddleOCR GGUF server needed for hybrid VL (config-driven)
     elif args.vl:
         engine = "vl"
         print("Engine: PaddleOCRVL (native, ~84s/page)", flush=True)
@@ -685,12 +689,12 @@ def main():
         ensure_server("dsocr")
     elif args.llama:
         engine = "llama"
-        ensure_server("llama")
+        ensure_server("hybrid")  # deprecated alias → hybrid engine
     elif args.ocr:
         engine = "ocr"
     elif use_ocr:
         engine = "hybrid"  # default: PaddleOCR Hybrid (layout + GGUF VL)
-        ensure_server("llama")
+        ensure_server("hybrid")
     else:
         engine = "text"
 
