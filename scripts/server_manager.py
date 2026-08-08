@@ -137,6 +137,15 @@ def start(name, server_cfg):
     raise RuntimeError(f"[server_manager] {name} /health 超时 (port {port})")
 
 
+_keep_servers = False
+
+
+def set_keep_servers(flag):
+    """Global switch: when True, cleanup() won't stop engines (keep-alive for reuse)."""
+    global _keep_servers
+    _keep_servers = bool(flag)
+
+
 def stop(name=None):
     """Stop server(s). name=None → stop all started by this session."""
     global _started_servers
@@ -158,6 +167,9 @@ def stop(name=None):
 
 
 def cleanup():
+    if _keep_servers:
+        print(f"[server_manager] keep_servers=true，保留 {len(_started_servers)} 个引擎常驻", flush=True)
+        return
     stop()
 
 

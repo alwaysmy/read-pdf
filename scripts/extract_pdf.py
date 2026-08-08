@@ -587,6 +587,11 @@ def main():
 
     if args.keep_servers:
         atexit.unregister(cleanup)
+        try:
+            import server_manager
+            server_manager.set_keep_servers(True)
+        except ImportError:
+            pass
 
     doc = fitz.open(str(pdf_path))
     total_pages = len(doc)
