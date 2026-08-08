@@ -168,7 +168,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 
 - 除非用户明确要求，OCR 一律用 temp=0（temp>0 会引入随机差异，同页多次输出不一致）
 - 禁止用 Qwen 做批量 OCR（~48s/页）
-- 禁止在对话中硬编码引擎参数（如 `-ngl`、`-c`、`--port`），这些统一在 `extract_pdf.py` 的 `SERVERS` 配置里管理
+- 禁止在对话中硬编码引擎参数（如 `-ngl`、`-c`、`--port`），这些统一在 `engine_config.yaml` 里管理
 
 ## 设计原则
 
@@ -219,7 +219,7 @@ d:\llm\llama-b9830-bin-win-cuda-13.3-x64\llama-server.exe `
 
 ### 路径找不到时
 
-如果 llama-server.exe 或模型文件路径不存在，提示用户检查并更新脚本中 `LLAMA_DIR` 和模型路径。
+如果 llama-server.exe 或模型文件路径不存在，提示用户检查并更新 `engine_config.local.yaml`（`defaults.llama_dir` 和引擎 `model`/`mmproj` 路径），详见 `docs/SETUP_GUIDE.md`。
 
 ### VRAM 检查
 
