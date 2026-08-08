@@ -268,6 +268,22 @@ engines:
 
 **结论**：公式/表格质量 **Hybrid ≈ GLM > DeepSeek**；速度 **DeepSeek > GLM > Hybrid**。Hybrid 表格带 HTML+bbox 略优，GLM 公式编号格式更规范。默认引擎维持 Hybrid（质量最稳），DS 仅作纯文本扫描件提速备选。
 
+## 8.6 版面分析与 OCR 合并 — 修正说明（2026-08-08）
+
+**问题**：曾设想"`--layout` 检测 → 裁剪 → 单送 VL 识别"的两级流水线。实测后废弃。
+
+**实测证据**：
+- PaddleOCR-VL Hybrid 的 `parsing_res_list` **本来就含空块**（检测到但无识别内容的块，如 image/chart）——同页 31 块中有 5 个空块，label+bbox 都在
+- 丢失的只是 `extract_hybrid()` 的 `if content:` 输出过滤，**版面检测与识别本就是同一管线一体完成**
+
+**修正结论**：
+- **不需要"合并两个流程"**——它们是同一个流程（PP-DocLayoutV3 检测 → VL 识别）
+- **正确做法**：改 `extract_hybrid()` 输出——去掉 `if content:` 过滤，同时输出所有块（label+bbox+content）+ table/image/chart 裁剪图 → 一次搞定"位置+内容+截图"
+- **原两级流水线方案的风险**：重复检测（--layout 一遍 + Hybrid 内部一遍）+ 裁剪丢页面上下文 → 准确率下降，已废弃
+- `--layout` 独立模式保留：纯版面分析、CPU 可跑、不启动服务（轻量场景）
+
+**实施**：见 §7 实现步骤补充——`extract_hybrid()` 输出改造（合并项）。
+
 ## 9. 决策记录与待办
 
 **已决策（2026-08-08）：**
