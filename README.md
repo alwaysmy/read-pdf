@@ -20,6 +20,25 @@ PDF 提取 skill：文本层提取（pdfmux + pdfplumber）→ OCR 引擎（Padd
 # 文本 PDF（无需模型/GPU，clone 后装好依赖即可用）
 python scripts/extract_pdf.py book.pdf
 
+# 图像 PDF（默认 hybrid 引擎）
+python scripts/extract_pdf.py scan.pdf --pages 1-10
+```
+
+## 服务模式（本体 + MCP，阶段 1）
+
+read-pdf 可独立运行为 HTTP 服务，供 MCP 客户端 / 插件调用（详见 `docs/server-design_20260808.md`）：
+
+```powershell
+# 1. 启动本体服务（默认 http://127.0.0.1:8123）
+python scripts/server.py
+
+# 2. 以 MCP server 接入任意 MCP 客户端
+uvx --from readpdf-mcp readpdf_mcp
+# 或本地: python scripts/mcp_server.py
+```
+
+MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`。
+
 # 图像 PDF（默认 hybrid）
 python scripts/extract_pdf.py scan.pdf
 
