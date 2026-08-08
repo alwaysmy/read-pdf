@@ -1,0 +1,47 @@
+{
+  "tag": "20260808_104116",
+  "pdf": "D:\\llm\\test_data\\微弱信号检测_高晋占编著_清华大学出版社_2019_第3版.pdf",
+  "pages": [
+    {
+      "page": 20,
+      "glm": {
+        "time_s": 2.39,
+        "chars": 1620,
+        "error": null
+      },
+      "dsocr": {
+        "time_s": 1.87,
+        "chars": 1703,
+        "error": null
+      }
+    },
+    {
+      "page": 21,
+      "glm": {
+        "time_s": 1.96,
+        "chars": 1139,
+        "error": null
+      },
+      "dsocr": {
+        "time_s": 1.55,
+        "chars": 1129,
+        "error": null
+      }
+    },
+    {
+      "page": 22,
+      "glm": {
+        "time_s": 2.16,
+        "chars": 1315,
+        "error": null
+      },
+      "dsocr": {
+        "time_s": 1.66,
+        "chars": 1344,
+        "error": null
+      }
+    }
+  ],
+  "glm_total_s": 6.51,
+  "dsocr_total_s": 5.08
+}
