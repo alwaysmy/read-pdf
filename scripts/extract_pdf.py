@@ -347,12 +347,12 @@ def extract_pdfmux(pdf_path, pages=None):
 _LAYOUT_MODEL = None
 
 
-def _get_layout_model():
+def _get_layout_model(device="cpu"):
     """Lazy-load PaddleX PP-DocLayoutV3 (PicoDet 版面检测)."""
     global _LAYOUT_MODEL
     if _LAYOUT_MODEL is None:
         import paddlex as pdx
-        _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3')
+        _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3', device=device)
     return _LAYOUT_MODEL
 
 
@@ -360,10 +360,10 @@ def _get_layout_model():
 _CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption"}
 
 
-def extract_layout(img_path, page_num=1, min_score=0.3):
+def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
     """PaddleX PP-DocLayoutV3 版面检测 — 返回结构化 blocks（label + bbox + score）."""
     try:
-        model = _get_layout_model()
+        model = _get_layout_model(device)
         result = model.predict(str(img_path))
         res = next(iter(result), None)
         if res is None:
@@ -471,6 +471,7 @@ def parse_args():
     p.add_argument("--layout", action="store_true", help="Layout analysis: detect table/figure regions, crop screenshots, output layout JSON (PP-DocLayoutV3)")
     p.add_argument("--layout-only", action="store_true", help="Layout analysis only: skip OCR, just output layout JSON + crops (implies --layout)")
     p.add_argument("--layout-min-score", type=float, default=0.3, help="Layout detection min score (default 0.3)")
+    p.add_argument("--layout-device", default="cpu", choices=["cpu", "gpu"], help="Layout detection device (default cpu, GPU 被 OCR 服务占用时用 CPU)")
     # --- Deprecated ---
     p.add_argument("--vl", action="store_true", help="[DEPRECATED] PaddleOCRVL native (use --hybrid instead)")
     p.add_argument("--llama", action="store_true", help="[DEPRECATED] PaddleOCR-VL GGUF (use --hybrid instead)")
@@ -625,7 +626,7 @@ def main():
                 tmp_path = tmp.name
             try:
                 pix.save(tmp_path)
-                blocks, stats = extract_layout(tmp_path, page_num=page_num + 1, min_score=args.layout_min_score)
+                blocks, stats = extract_layout(tmp_path, page_num=page_num + 1, min_score=args.layout_min_score, device=args.layout_device)
                 page_blocks = []
                 for b in blocks:
                     b["page"] = page_num + 1
