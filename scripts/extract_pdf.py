@@ -39,6 +39,18 @@ SERVERS = {
             "--api-key", "12345",
         ],
     },
+    "dsocr": {  # DeepSeek-OCR Q8_0 — text-first multimodal OCR (P2)
+        "port": 12337,
+        "args": [
+            LLAMA_SERVER,
+            "-m", r"D:\llm\ggml-org\DeepSeek-OCR\DeepSeek-OCR-Q8_0.gguf",
+            "--mmproj", r"D:\llm\ggml-org\DeepSeek-OCR\mmproj-DeepSeek-OCR-Q8_0.gguf",
+            "--port", "12337", "--host", "127.0.0.1",
+            "-ngl", "100", "--no-mmap", "--no-warmup",
+            "-c", "8192", "-n", "8192", "-t", "8", "-np", "1",
+            "--api-key", "12345",
+        ],
+    },
     "qwen": {  # Qwen3.6-35B-A3B — knowledge audit
         "port": 12334,
         "args": [
@@ -185,6 +197,41 @@ def extract_llama(img_path):
 def extract_glm(img_path):
     """GLM-OCR Q8_0 — primary image PDF engine, markdown + LaTeX."""
     return http_extract(12335, "Text Recognition:", img_path, temp=0, max_tokens=4096)
+
+
+def http_extract_text_first(port, prompt, img_path, temp=0, max_tokens=8192):
+    """HTTP extraction for text-first models (DeepSeek-OCR): text BEFORE image."""
+    with open(img_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+    import requests
+    try:
+        resp = requests.post(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            headers={"Authorization": "Bearer 12345"},
+            json={
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ],
+                }],
+                "temperature": temp,
+                "max_tokens": max_tokens,
+            },
+            timeout=180,
+        )
+        if resp.status_code != 200:
+            return "", {"error": f"HTTP {resp.status_code}"}
+        content = resp.json()["choices"][0]["message"]["content"]
+        return content, {}
+    except Exception as e:
+        return "", {"error": str(e)}
+
+
+def extract_dsocr(img_path):
+    """DeepSeek-OCR Q8_0 — text-first OCR, markdown + layout, fast (~0.8s/page)."""
+    return http_extract_text_first(12337, "OCR markdown", img_path, temp=0, max_tokens=8192)
 
 
 def extract_qwen(img_path):
@@ -456,6 +503,7 @@ def parse_args():
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for OCR (default: 150, lower=faster)")
     p.add_argument("--force-ocr", action="store_true", help="Use OCR even if text detected")
     p.add_argument("--glm", action="store_true", help="GLM-OCR Q8_0 (primary, ~4s/page, LaTeX+formulas)")
+    p.add_argument("--dsocr", action="store_true", help="DeepSeek-OCR Q8_0 (text-first multimodal, ~0.8s/page, markdown)")
     p.add_argument("--hybrid", action="store_true", help="PaddleOCR Hybrid (Python layout + GGUF VL, ~8s/page)")
     p.add_argument("--ocr", action="store_true", help="[DEPRECATED] PP-OCRv5 (use --hybrid instead)")
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
@@ -582,6 +630,9 @@ def main():
     elif args.glm:
         engine = "glm"
         ensure_server("glm")
+    elif args.dsocr:
+        engine = "dsocr"
+        ensure_server("dsocr")
     elif args.llama:
         engine = "llama"
         ensure_server("llama")
@@ -757,6 +808,9 @@ def main():
     # --- Image/OCR path ---
     if engine == "glm":
         extract_fn = extract_glm
+        suffix = "md"
+    elif engine == "dsocr":
+        extract_fn = extract_dsocr
         suffix = "md"
     elif engine == "vl":
         extract_fn = extract_paddle_vl
