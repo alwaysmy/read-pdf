@@ -17,17 +17,34 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "extract_pdf.py"
 HOST = os.environ.get("READPDF_HOST", "127.0.0.1")
 PORT = int(os.environ.get("READPDF_PORT", "8123"))
-API_KEY = os.environ.get("READPDF_API_KEY", "")
+
+
+def _get_api_key():
+    """API key: env READPDF_API_KEY > ~/.readpdf/key（首次自动生成）. 强制认证."""
+    env_key = os.environ.get("READPDF_API_KEY", "")
+    if env_key:
+        return env_key
+    key_dir = pathlib.Path.home() / ".readpdf"
+    key_file = key_dir / "key"
+    if key_file.exists():
+        return key_file.read_text(encoding="utf-8").strip()
+    # 首次运行：生成随机 key 并持久化
+    import secrets
+    key_dir.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_urlsafe(24)
+    key_file.write_text(key, encoding="utf-8")
+    print(f"[server] 已生成 API key: {key}（保存到 {key_file}，客户端需 Bearer 认证）", flush=True)
+    return key
+
+
+API_KEY = _get_api_key()
 
 app = Flask(__name__)
 
 
 def _check_auth():
-    if API_KEY:
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {API_KEY}":
-            return False
-    return True
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {API_KEY}"
 
 
 def _run_cli(args, timeout=900):
@@ -144,22 +161,48 @@ def config():
     local_path = REPO_ROOT / "engine_config.local.yaml"
     main_path = REPO_ROOT / "engine_config.yaml"
     if request.method == "GET":
+        # 脱敏返回：local.yaml 里可能含真实 token，api_key 掩码
+        def _mask(text):
+            import re
+            return re.sub(r"(api_key\s*:\s*[\"']?)([^\"'\s}]+)", lambda m: m.group(1) + "***", text or "")
         return jsonify({
-            "main_config": main_path.read_text(encoding="utf-8") if main_path.exists() else "",
-            "local_config": local_path.read_text(encoding="utf-8") if local_path.exists() else "",
+            "main_config": _mask(main_path.read_text(encoding="utf-8")) if main_path.exists() else "",
+            "local_config": _mask(local_path.read_text(encoding="utf-8")) if local_path.exists() else "",
             "main_path": str(main_path), "local_path": str(local_path),
         })
-    # POST: 写 local.yaml（校验 YAML）
+    # POST: 写 local.yaml（校验 YAML + 危险字段白名单）
     body = request.get_json(force=True, silent=True) or {}
     content = body.get("config")
     if not content:
         return jsonify({"error": "缺少 config 字段"}), 400
     try:
         import yaml
-        yaml.safe_load(content)  # 校验
+        cfg = yaml.safe_load(content)  # 校验
     except Exception as e:
         return jsonify({"error": f"YAML 无效: {e}"}), 400
+    # 白名单校验：禁止覆盖会改变进程启动的字段（防 RCE）
+    BANNED_KEYS = ("exe", "llama_dir", "args", "command")
+    def _check_banned(node, path=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                p = f"{path}.{k}" if path else k
+                if k in BANNED_KEYS:
+                    raise ValueError(f"禁止通过 API 修改字段: {p}（会改变进程启动，请直接编辑 engine_config.local.yaml）")
+                _check_banned(v, p)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                _check_banned(v, f"{path}[{i}]")
+    try:
+        _check_banned(cfg or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     local_path.write_text(content, encoding="utf-8")
+    # 刷新 engines 缓存，使新配置立即生效
+    try:
+        import engines as eng_mod
+        eng_mod.load_config(force=True)
+    except Exception:
+        pass
     return jsonify({"status": "ok", "path": str(local_path)})
 
 

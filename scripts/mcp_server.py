@@ -15,11 +15,28 @@ MCP 工具:
 """
 import json
 import os
+import pathlib
 
 import requests
 
 SERVER_URL = os.environ.get("READPDF_SERVER_URL", "http://127.0.0.1:8123").rstrip("/")
-API_KEY = os.environ.get("READPDF_API_KEY", "")
+
+
+def _api_key():
+    """API key: env READPDF_API_KEY > ~/.readpdf/key（server 首次启动自动生成）. 与 server.py 一致."""
+    env_key = os.environ.get("READPDF_API_KEY", "")
+    if env_key:
+        return env_key
+    try:
+        key_file = pathlib.Path.home() / ".readpdf" / "key"
+        if key_file.exists():
+            return key_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
+
+
+API_KEY = _api_key()
 
 
 def _headers():
