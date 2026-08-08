@@ -110,15 +110,31 @@ def start(name, server_cfg):
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _started_servers.append((name, proc))
 
-    # 等待就绪
+    # 等待就绪：先等端口，再等 /health（模型加载完成）——避免冷启动前几页失败
+    import requests as _req
+    port_open = False
     for _ in range(120):
         if is_port_open(port):
-            print(f"[server_manager] {name} 就绪 (port {port})", flush=True)
-            return proc
+            port_open = True
+            break
         if proc.poll() is not None:
             raise RuntimeError(f"[server_manager] {name} 启动失败 (exit {proc.returncode})")
         time.sleep(0.5)
-    raise RuntimeError(f"[server_manager] {name} 启动超时 (port {port})")
+    if not port_open:
+        raise RuntimeError(f"[server_manager] {name} 启动超时 (port {port})")
+    # 端口已监听 → 等 /health 200（模型真正加载完）
+    for _ in range(240):  # 最多 120s
+        try:
+            r = _req.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            if r.status_code == 200:
+                print(f"[server_manager] {name} 就绪 (port {port})", flush=True)
+                return proc
+        except Exception:
+            pass
+        if proc.poll() is not None:
+            raise RuntimeError(f"[server_manager] {name} 启动失败 (exit {proc.returncode})")
+        time.sleep(0.5)
+    raise RuntimeError(f"[server_manager] {name} /health 超时 (port {port})")
 
 
 def stop(name=None):
