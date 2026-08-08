@@ -37,16 +37,18 @@ scripts/
 
 ### 数据流
 
-**核心抽象：一切引擎都是「url + key 的 server」**——本地引擎和云端引擎本质相同，区别只在于 local 模式需要先确保服务在跑。
+**核心抽象：一切引擎都是「url + key 的 server」**——每个引擎有 local/cloud 两个服务源，区别只在 local 源需要先确保服务在跑。
 
 ```
-engines.call("glm", img, prompt)
-  ├─ 读配置: endpoint / api_key / message_order / output_format
-  ├─ if mode == "local":
+engines.call("glm", img, prompt, source="local")
+  ├─ 读配置: 引擎 identity + sources[source]（endpoint / api_key）
+  ├─ if source == "local":
   │     server_manager.ensure("glm")   # 唯一多出的环节：检查本地服务，没起就启动
-  │     （云引擎跳过此步，直接连远程 url）
-  └─ POST {endpoint}/chat/completions   # 本地云端走同一 HTTP 调用路径
+  │     （云源跳过此步，直接连远程 url）
+  └─ POST {endpoint}/chat/completions   # 本地云源走同一 HTTP 调用路径
 ```
+
+**源切换**：`--source cloud` 临时换服务源（不改配置）；改 `default_source` 永久换默认。引擎行为（prompt/message_order/output_format）不变。
 
 **要点**：
 - `server_manager.ensure()` = 检查端口 → 没服务就 `llama-server` 启动 → 等就绪（与现状逻辑一致，只是独立成模块）
@@ -55,82 +57,95 @@ engines.call("glm", img, prompt)
 
 ---
 
-## 3. engine_config.yaml 格式设计（YAML）
+## 3. engine_config.yaml 格式设计（YAML，双源模型）
 
 **选型理由**：与 `agents/openai.yaml` 统一、支持注释、嵌套引擎配置可读性好（对比 JSON/TOML 详见 §3.4）。
+
+**核心模型：每个引擎有「本地源 local」和「云源 cloud」两套配置，切换 = 切换服务源。**
+- `default_source: local`（默认本地，配置文件可改）
+- 命令行 `--source cloud` 可临时切换（不改配置文件）
+- 引擎 identity（prompt/message_order/output_format）不变，只换 endpoint + key + server
 
 ```yaml
 # read-pdf 引擎配置
 defaults:
-  llama_dir: "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"   # llama-server 目录
+  llama_dir: "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"   # llama-server 目录（本地源用）
 
 engines:
   hybrid:                 # PaddleOCR Hybrid — 图像 PDF 默认（质量最稳）
-    mode: local
-    endpoint: "http://127.0.0.1:12336/v1"
-    api_key: "12345"
-    prompt: ""
+    default_source: local      # 默认服务源：local | cloud
+    prompt: ""                 # 引擎行为（两源共用，不随源变）
     max_tokens: 4096
     message_order: image-first
-    output_format: markdown   # text|markdown|html
-    server:                   # 仅 local 引擎有；cloud 为 null
-      exe: llama-server.exe
-      model: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
-      mmproj: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
-      port: 12336
-      args: ["-ngl","100","--no-mmap","--no-warmup","-c","32768","-t","8","-np","1"]
+    output_format: markdown    # text|markdown|html
+    sources:
+      local:                   # 本地源：llama-server 服务
+        endpoint: "http://127.0.0.1:12336/v1"
+        api_key: "12345"
+        server:
+          exe: llama-server.exe
+          model: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
+          mmproj: "D:/llm/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+          port: 12336
+          args: ["-ngl","100","--no-mmap","--no-warmup","-c","32768","-t","8","-np","1"]
+      cloud:                   # 云源：PaddleOCR AI Studio（同款模型云端版）
+        endpoint: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        api_key: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"   # 环境变量注入
+        server: null           # 云源无本地服务段
 
-  glm:                    # GLM-OCR Q8_0 — 公式/数值表格保真
-    mode: local
-    endpoint: "http://127.0.0.1:12335/v1"
-    api_key: "12345"
+  glm:                    # GLM-OCR Q8_0 — 公式/数值表格保真（仅本地）
+    default_source: local
     prompt: "Text Recognition:"
     max_tokens: 4096
     message_order: image-first
     output_format: markdown
-    server:
-      exe: llama-server.exe
-      model: "D:/llm/ggml-org/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf"
-      mmproj: "D:/llm/ggml-org/GLM-OCR-GGUF/mmproj-GLM-OCR-Q8_0.gguf"
-      port: 12335
-      args: ["-ngl","100","--no-mmap","--no-warmup","-c","16384","-t","8","-np","1"]
+    sources:
+      local:
+        endpoint: "http://127.0.0.1:12335/v1"
+        api_key: "12345"
+        server:
+          exe: llama-server.exe
+          model: "D:/llm/ggml-org/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf"
+          mmproj: "D:/llm/ggml-org/GLM-OCR-GGUF/mmproj-GLM-OCR-Q8_0.gguf"
+          port: 12335
+          args: ["-ngl","100","--no-mmap","--no-warmup","-c","16384","-t","8","-np","1"]
 
-  dsocr:                  # DeepSeek-OCR — 纯文本扫描件提速（快 45%）
-    mode: local
-    endpoint: "http://127.0.0.1:12337/v1"
-    api_key: "12345"
+  dsocr:                  # DeepSeek-OCR — 纯文本扫描件提速（快 45%）（仅本地）
+    default_source: local
     prompt: "OCR markdown"
     max_tokens: 8192
     message_order: text-first    # DeepSeek 要求 text 在前
     output_format: markdown
-    server:
-      exe: llama-server.exe
-      model: "D:/llm/ggml-org/DeepSeek-OCR/DeepSeek-OCR-Q8_0.gguf"
-      mmproj: "D:/llm/ggml-org/DeepSeek-OCR/mmproj-DeepSeek-OCR-Q8_0.gguf"
-      port: 12337
-      args: ["-ngl","100","--no-mmap","--no-warmup","-c","8192","-t","8","-np","1"]
+    sources:
+      local:
+        endpoint: "http://127.0.0.1:12337/v1"
+        api_key: "12345"
+        server:
+          exe: llama-server.exe
+          model: "D:/llm/ggml-org/DeepSeek-OCR/DeepSeek-OCR-Q8_0.gguf"
+          mmproj: "D:/llm/ggml-org/DeepSeek-OCR/mmproj-DeepSeek-OCR-Q8_0.gguf"
+          port: 12337
+          args: ["-ngl","100","--no-mmap","--no-warmup","-c","8192","-t","8","-np","1"]
 
-  baidu_ocr:              # 百度 OCR — 云引擎（验证云模式）
-    mode: cloud
-    endpoint: "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
-    api_key: "${BAIDU_API_KEY}"       # 环境变量注入，不进仓库
-    api_secret: "${BAIDU_SECRET_KEY}"
-    auth_endpoint: "https://aip.baidubce.com/oauth/2.0/token"
-    output_format: text               # 纯文本行（无 Markdown/公式）
-    server: null
-
-  cloud_glm:              # 云端 GLM（配置示例，本期不启用）
-    mode: cloud
-    endpoint: "https://api.bigmodel.cn/api/paas/v4/chat/completions"
-    api_key: "${ZHIPU_API_KEY}"
+  paddle_vl:              # PaddleOCR-VL 云端解析（官方 AI Studio，验证云源）
+    default_source: cloud
+    prompt: ""                 # 云 API 用 job 模式，无 prompt
+    max_tokens: 0
+    message_order: image-first
     output_format: markdown
-    server: null
+    sources:
+      cloud:
+        endpoint: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        api_key: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"
+        model: "PaddleOCR-VL-1.6"     # 云 API 模型名（job 模式）
+        optional_payload: {useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: false}
+        server: null
 
 # 引擎路由：默认排序（agent 可按场景覆盖）
 routing:
   text_pdf: ["pdfmux", "pdfplumber"]        # 文本层 PDF
-  image_pdf: ["hybrid", "glm", "dsocr"]     # 图像 PDF 默认优先级
-  image_pdf_cloud: ["hybrid", "baidu_ocr"]  # 无 GPU 时的云兜底链（可选启用）
+  image_pdf: ["hybrid", "glm", "dsocr"]     # 图像 PDF 默认优先级（本地源）
+  image_pdf_cloud: ["hybrid", "paddle_vl"]  # 无 GPU / 切云源时的兜底链
   quality_fallback: ["glm"]                 # 公式/表格质量兜底
 ```
 
@@ -138,24 +153,27 @@ routing:
 
 | 项 | 说明 |
 |---|---|
-| `mode: local\|cloud` | local 需 `server_manager` 启服务；cloud 直接请求远程，**不发本地进程** |
-| `message_order: image-first\|text-first` | GLM 系 image 在前；DeepSeek-OCR 系 text 在前 |
-| `output_format: text\|markdown\|html` | 返回值格式。text（如百度 OCR）需自行转 md |
-| `api_key: ${ENV_VAR}` | 云端密钥从环境变量读，不进仓库 |
-| `server: null` | 云端引擎无本地服务段 |
-| `routing` | 默认引擎排序配置化；`image_pdf` 默认仍 hybrid |
-| `LLAMA_DIR` | 移到 `defaults.llama_dir`，`server_manager` 用它拼 exe 路径 |
+| `default_source: local\|cloud` | 引擎默认服务源；配置文件可改默认，`--source` 可临时覆盖 |
+| `sources.local` | 本地源：endpoint + api_key + server（llama-server 启动参数） |
+| `sources.cloud` | 云源：endpoint + api_key（`${ENV}` 注入）+ server:null（不发本地进程） |
+| `server: null` | 云源无本地服务段，`server_manager` 自动跳过 |
+| `message_order` | GLM 系 image-first；DeepSeek 系 text-first（引擎行为，两源共用） |
+| `output_format` | text\|markdown\|html。云 API 按 job 模式返回 markdown+图 |
+| `routing` | 默认引擎排序配置化；`image_pdf` 默认仍 hybrid（本地源） |
+| `LLAMA_DIR` | 移到 `defaults.llama_dir`，本地源的 `server_manager` 用它拼 exe 路径 |
 
-### 3.2 默认引擎排序（解耦后与现状对比）
+### 3.2 默认引擎排序与源切换（解耦后 vs 现状）
 
-| 场景 | 现状（代码写死） | 解耦后（routing 配置） |
+| 场景 | 现状（代码写死） | 解耦后（配置 + 参数） |
 |---|---|---|
 | 文本 PDF | pdfmux+pdfplumber | `routing.text_pdf`（默认不变） |
-| 图像 PDF | **hybrid**（代码写死） | `routing.image_pdf`（默认仍 hybrid，但可配） |
-| 无 GPU 机器 | 无云兜底 | `routing.image_pdf_cloud` = hybrid→baidu_ocr 自动降级 |
+| 图像 PDF | **hybrid**（代码写死） | `routing.image_pdf`（默认仍 hybrid 本地源） |
+| 无 GPU 机器 | 无云兜底 | `routing.image_pdf_cloud` = hybrid→paddle_vl（云源） |
+| 临时切云 | 无 | `--source cloud`（本次调用用云源，不改配置） |
+| 永久切云 | 改代码 | 改 `engine_config.yaml` 的 `default_source` |
 | 公式/表格质量 | agent 手动 `--glm` | `routing.quality_fallback` = glm |
 
-**原则不变**：默认 Hybrid（质量最稳），routing 只是把可选顺序暴露为配置，agent 决策 + 配置兜底结合。
+**源切换语义**：`--source cloud` 作用于所有引擎或指定引擎（如 `--source hybrid=cloud`），只换 endpoint/key/server，不换引擎行为。
 
 ### 3.3 本机覆盖（engine_config.local.yaml，gitignore）
 
@@ -163,9 +181,15 @@ routing:
 # 本机私有覆盖（不提交，改路径/端口/密钥）
 engines:
   glm:
-    server:
-      model: "D:/my/models/GLM-OCR-Q8_0.gguf"
-      port: 12335
+    sources:
+      local:
+        server:
+          model: "D:/my/models/GLM-OCR-Q8_0.gguf"
+          port: 12335
+  hybrid:
+    sources:
+      cloud:
+        api_key: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"  # 本机填真实 token（或环境变量）
 ```
 
 - 提交 `engine_config.local.example.yaml` 作为模板（含占位符，不含真实密钥）
@@ -209,15 +233,20 @@ engines:
 
 ---
 
-## 5. 百度 OCR 云引擎接入细节（验证云模式的样本）
+## 5. PaddleOCR AI Studio 云引擎接入细节（验证云源的样本）
 
-参考官方文档（https://cloud.baidu.com/doc/OCR/s/1k3h7y3db）：
+参考官方示例（paddleocr.aistudio-app.com，job 模式）：
 
-1. **鉴权**：`GET https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${BAIDU_API_KEY}&client_secret=${BAIDU_SECRET_KEY}` → 返回 `access_token`（缓存，约 30 天有效）
-2. **调用**：`POST https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=<token>`，表单参数 `image=<base64>`（URL 编码）
-3. **响应**：`words_result[]`（`words` + `probability{average,variance,min}`）——置信度结构与本地 PaddleOCR 一致，可直接映射到现有 `stats["confidence"]`
-4. **免费额度**：官方免费测试资源（注册领取），适合验证云模式
-5. **注意**：百度 OCR 是"纯文本行"输出（无 Markdown/版面结构），定位为**文本层/扫描纯文本兜底**，不等同 GLM 的结构化输出
+1. **鉴权**：`Authorization: bearer ${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}`（直接 bearer，无 OAuth 换 token 流程）
+2. **提交**：`POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`，`model=PaddleOCR-VL-1.6`，支持本地文件（multipart）或 fileUrl
+3. **轮询**：`GET /api/v2/ocr/jobs/{jobId}`，state: pending → running → done/failed
+4. **结果**：`resultUrl.jsonUrl` → JSONL，`layoutParsingResults[].markdown.text`（Markdown 全文）+ `markdown.images`（图）+ `outputImages`（识别图）
+5. **注意**：云 API 是 **job 异步模式**（提交→轮询），与本地同步 HTTP 不同——`engines.py` 的 cloud 源需封装"提交+轮询"逻辑；token 是敏感凭证，只从环境变量读
+
+**脚本差异（傅师傅提供）**：
+- `PaddleOCR-VL-1.6`（脚本1）：文档解析，输出 Markdown+版面+图 → 对应 `paddle_vl` 云引擎
+- `PP-OCRv6`（脚本2/3 相同）：纯 OCR 文本行+识别图 → 轻量，可选
+- MCP（paddleocr-mcp）：uvx 封装，同模型同 token，可参考其调用方式
 
 ---
 
@@ -239,8 +268,8 @@ engines:
    - ensure_server 调用 → server_manager
    - extract_* 函数 → engines.call()
 3. 语法检查 + 本地回归：GLM 跑 1 页（确认与现有输出一致）
-4. 云模式验证：baidu_ocr 引擎跑 1 页（确认不启本地服务、token 流程通、输出可解析）
-5. 混合验证：同 PDF 本地 GLM + 云 baidu_ocr 各 1 页（确认互不干扰）
+4. 云源验证：paddle_vl 云引擎跑 1 页（确认不启本地服务、token 流程通、Markdown 输出可解析）
+5. 源切换验证：同 PDF 本地 hybrid + 云 paddle_vl 各 1 页（`--source` 临时切换，确认互不干扰）
 6. 提交 + 更新 SKILL.md（引擎配置说明 + 云引擎用法）
 ```
 
@@ -288,9 +317,10 @@ engines:
 
 **已决策（2026-08-08）：**
 - ✅ 配置格式：**YAML**（与 agents/openai.yaml 统一，§3.4 有对比）
-- ✅ 云引擎：本期**只做 baidu_ocr 验证**（云模式框架 + 真实调用），cloud_glm 保留配置示例不启用
+- ✅ **双源模型**：每引擎 local/cloud 两套配置（§3），`default_source` 默认本地，`--source` 临时切换
+- ✅ 云引擎：**PaddleOCR AI Studio 云 API**（paddleocr.aistudio-app.com，官方出品，同款 PaddleOCR-VL-1.6，直接 bearer token）——取代原"百度智能云 OCR"方案
 - ✅ 本机覆盖：`engine_config.local.yaml` **放仓库但 gitignore**，提交 `engine_config.local.example.yaml` 模板
-- ✅ **配置集中原则**：所有配置（引擎/路由/服务参数）集中在 `read-pdf/` 下，不撒到用户目录——小工具易维护
+- ✅ **配置集中原则**：所有配置集中在 `read-pdf/` 下，不撒到用户目录——小工具易维护
 
 **待办：**
-- [ ] 傅师傅注册百度智能云 OCR → 提供 API Key/Secret Key → 填入 `engine_config.local.yaml` 或环境变量 → 真测 baidu_ocr 引擎
+- [ ] 傅师傅提供有效 aistudio token（之前的 token 已出现在对话中，建议重置）→ 设环境变量 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN` → 真测 paddle_vl 云引擎
