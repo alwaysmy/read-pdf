@@ -342,6 +342,61 @@ def extract_pdfmux(pdf_path, pages=None):
 
 
 # ---------------------------------------------------------------------------
+# Layout analysis (P1: PicoDet-S_layout_3cls / PP-DocLayoutV3)
+# ---------------------------------------------------------------------------
+_LAYOUT_MODEL = None
+
+
+def _get_layout_model():
+    """Lazy-load PaddleX PP-DocLayoutV3 (PicoDet 版面检测)."""
+    global _LAYOUT_MODEL
+    if _LAYOUT_MODEL is None:
+        import paddlex as pdx
+        _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3')
+    return _LAYOUT_MODEL
+
+
+# table/figure 等可裁剪元素；text/header/footer 等文本元素不裁剪
+_CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption"}
+
+
+def extract_layout(img_path, page_num=1, min_score=0.3):
+    """PaddleX PP-DocLayoutV3 版面检测 — 返回结构化 blocks（label + bbox + score）."""
+    try:
+        model = _get_layout_model()
+        result = model.predict(str(img_path))
+        res = next(iter(result), None)
+        if res is None:
+            return [], {}
+        blocks = []
+        for box in res.get("boxes", []):
+            label = box.get("label", "text")
+            score = float(box.get("score", 0.0))
+            if score < min_score:
+                continue
+            coord = box.get("coordinate") or []
+            if len(coord) == 4:
+                bbox = [int(v) for v in coord]  # [x0, y0, x1, y1]
+            else:
+                pts = box.get("polygon_points")
+                if pts is not None and len(pts) >= 4:
+                    xs = [float(p[0]) for p in pts]
+                    ys = [float(p[1]) for p in pts]
+                    bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+                else:
+                    continue
+            blocks.append({
+                "label": label,
+                "score": round(score, 3),
+                "bbox": bbox,
+                "crop": label in _CROP_LABELS,
+            })
+        return blocks, {}
+    except Exception as e:
+        return [], {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Text PDF helpers
 # ---------------------------------------------------------------------------
 def extract_page_text(page):
@@ -413,6 +468,9 @@ def parse_args():
     p.add_argument("--output-dir", help="Output directory")
     p.add_argument("--batch", action="store_true", help="Send all --pages as one request (audit engine, cross-page context)")
     p.add_argument("--keep-servers", action="store_true", help="Keep llama servers running after extraction")
+    p.add_argument("--layout", action="store_true", help="Layout analysis: detect table/figure regions, crop screenshots, output layout JSON (PP-DocLayoutV3)")
+    p.add_argument("--layout-only", action="store_true", help="Layout analysis only: skip OCR, just output layout JSON + crops (implies --layout)")
+    p.add_argument("--layout-min-score", type=float, default=0.3, help="Layout detection min score (default 0.3)")
     # --- Deprecated ---
     p.add_argument("--vl", action="store_true", help="[DEPRECATED] PaddleOCRVL native (use --hybrid instead)")
     p.add_argument("--llama", action="store_true", help="[DEPRECATED] PaddleOCR-VL GGUF (use --hybrid instead)")
@@ -547,6 +605,70 @@ def main():
                 f.write("\f")
         doc.close()
         print(f"DONE: {out_path.stat().st_size} bytes  |  {out_path}", flush=True)
+        sys.exit(0)
+
+    # --- Layout analysis mode (P1: PP-DocLayoutV3, no OCR needed) ---
+    if args.layout or args.layout_only:
+        out_folder, out_path, _unused_imgs = make_output_folder(pdf_path.stem, "layout", args.output_dir, page_suffix)
+        layout_dir = out_folder / "layout"
+        crops_dir = layout_dir / "crops"
+        layout_dir.mkdir(exist_ok=True)
+        crops_dir.mkdir(exist_ok=True)
+        layout_path = layout_dir / f"{pdf_path.stem}_layout.json"
+        all_pages = []
+        crop_index = 0
+        t_start = time.time()
+        for idx, page_num in enumerate(page_nums):
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=args.dpi)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                pix.save(tmp_path)
+                blocks, stats = extract_layout(tmp_path, page_num=page_num + 1, min_score=args.layout_min_score)
+                page_blocks = []
+                for b in blocks:
+                    b["page"] = page_num + 1
+                    if b.pop("crop", False):
+                        # Crop element region from rendered page
+                        x0, y0, x1, y1 = b["bbox"]
+                        crop_name = f"page{page_num+1:04d}_crop{crop_index:03d}_{b['label']}.png"
+                        crop_path = crops_dir / crop_name
+                        try:
+                            import PIL.Image
+                            img = PIL.Image.open(tmp_path)
+                            img.crop((x0, y0, x1, y1)).save(str(crop_path))
+                            b["crop_path"] = str(crop_path)
+                            crop_index += 1
+                        except Exception as ce:
+                            b["crop_error"] = str(ce)
+                    page_blocks.append(b)
+                all_pages.append({"page": page_num + 1, "blocks": page_blocks})
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            progress = (idx + 1) * 100 // requested_pages
+            if progress % 20 == 0 or progress == 100:
+                print(f"  {progress}% ({idx + 1}/{requested_pages})", flush=True)
+        doc.close()
+        layout_result = {
+            "status": "ok",
+            "file": str(pdf_path),
+            "engine": "PP-DocLayoutV3",
+            "dpi": args.dpi,
+            "min_score": args.layout_min_score,
+            "total_time": round(time.time() - t_start, 1),
+            "pages": all_pages,
+        }
+        with open(str(layout_path), "w", encoding="utf-8") as f:
+            json.dump(layout_result, f, ensure_ascii=False, indent=2)
+        n_crops = crop_index
+        n_blocks = sum(len(p["blocks"]) for p in all_pages)
+        print(f"DONE: layout JSON {layout_path}  |  {n_blocks} blocks, {n_crops} crops", flush=True)
+        if args.json:
+            print(json.dumps(layout_result, ensure_ascii=False, indent=2), flush=True)
         sys.exit(0)
 
     # --- Text path ---
