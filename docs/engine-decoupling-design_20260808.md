@@ -70,6 +70,8 @@ engines.call("glm", img, prompt, source="local")
 # read-pdf 引擎配置
 defaults:
   llama_dir: "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"   # llama-server 目录（本地源用）
+  device: gpu                # 本地服务默认设备：gpu | cpu（默认 gpu）
+  gpu_fallback: true         # 配置 gpu 但检测不到 GPU 时：告警并回退 cpu（仅本地服务）
 
 engines:
   hybrid:                 # PaddleOCR Hybrid — 图像 PDF 默认（质量最稳）
@@ -161,6 +163,8 @@ routing:
 | `output_format` | text\|markdown\|html。云 API 按 job 模式返回 markdown+图 |
 | `routing` | 默认引擎排序配置化；`image_pdf` 默认仍 hybrid（本地源） |
 | `LLAMA_DIR` | 移到 `defaults.llama_dir`，本地源的 `server_manager` 用它拼 exe 路径 |
+| `defaults.device: gpu\|cpu` | 本地服务默认设备；**默认 gpu** |
+| `defaults.gpu_fallback: true` | 配置 gpu 但检测不到 GPU → **告警 + 回退 cpu**（仅本地服务；云源无关） |
 
 ### 3.2 默认引擎排序与源切换（解耦后 vs 现状）
 
@@ -225,6 +229,8 @@ engines:
 - 从 `engines` 配置读 `server` 段（不在自己硬编码）
 - `ensure(name)` / `stop(name)` / `stop_all()` / `cleanup()`（atexit）
 - `is_port_open()` / `start_server()` 逻辑从 extract_pdf.py 平移
+- **设备检测与回退**（仅本地服务）：启动前按 `defaults.device` 检测 GPU——配置 gpu 但 `nvidia-smi` 不可用/无 GPU → 打印告警（WARNING: 未检测到 GPU，回退 CPU 运行）→ 以 cpu 模式启动；`gpu_fallback: false` 时直接报错退出（用户显式禁止回退）
+- `--layout-device` 默认值改为 gpu（与 defaults.device 一致）
 
 ### extract_pdf.py（改造）
 - 删除 `SERVERS`/`LLAMA_DIR`/`http_extract`/`http_extract_text_first`（移到 engines/server_manager）
