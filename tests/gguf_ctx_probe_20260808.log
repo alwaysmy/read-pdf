@@ -1,0 +1,6 @@
+0.00.094.558 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.170.355 I srv    load_model: loading model 'D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF.gguf'
+0.01.467.311 I srv    load_model: loaded multimodal model, 'D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF-mmproj.gguf'
+0.01.498.445 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 8192, kv_unified = 'false'
+0.01.501.789 I srv  llama_server: model loaded
+0.01.501.794 I srv  llama_server: listening on http://127.0.0.1:12399
