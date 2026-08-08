@@ -3,5 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 
-# 本地测试产物（按需保留）
+# 本机私有配置（不提交）
+engine_config.local.yaml
+
+# 本地测试产物
 tests/*_output/
+tests/bench_*/
+tests/*.png
