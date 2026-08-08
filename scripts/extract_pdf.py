@@ -331,8 +331,6 @@ def extract_hybrid(img_path, source=None):
         from paddleocr import PaddleOCRVL
         import engines as _eng
         endpoint, api_key = _eng.get_endpoint("hybrid", source or "local")
-        if api_key is None or (isinstance(api_key, dict) and "__missing__" in api_key):
-            return "", {"error": f"环境变量未设置: {api_key.get('__missing__') if isinstance(api_key, dict) else api_key}"}
         key = ('llama-cpp-server', endpoint.rstrip('/'), api_key)
         if key not in _vl_instances:
             _vl_instances[key] = PaddleOCRVL(

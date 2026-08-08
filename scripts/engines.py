@@ -19,13 +19,16 @@ _cache = None
 
 
 def _expand_env(value):
-    """Expand ${ENV_VAR} placeholders from environment."""
+    """Expand ${ENV_VAR} placeholders from environment.
+    未定义的变量 → 抛 ValueError（可诊断），而非返回异常 dict。"""
     if isinstance(value, str) and "${" in value:
+        import re
+        for m in re.finditer(r"\$\{([^}]+)\}", value):
+            var = m.group(1)
+            if var not in os.environ:
+                raise ValueError(f"环境变量 {var} 未设置（可设到 engine_config.local.yaml 或系统环境变量）")
         for k in os.environ:
             value = value.replace(f"${{{k}}}", os.environ[k])
-        # 未展开的占位符 → 标记缺失
-        if "${" in value:
-            return {"__missing__": value}
     return value
 
 
@@ -131,50 +134,79 @@ def call_local(engine, src_cfg, img_path, prompt, temp=0, max_tokens=8192):
 def call_cloud_aistudio(engine, src_cfg, file_path, max_wait_s=300):
     """PaddleOCR AI Studio job 模式：提交 → 轮询 → 拉 JSONL markdown."""
     import requests
-    endpoint = _expand_env(src_cfg.get("endpoint"))
-    api_key = _expand_env(src_cfg.get("api_key"))
+    try:
+        endpoint = _expand_env(src_cfg.get("endpoint"))
+        api_key = _expand_env(src_cfg.get("api_key"))
+    except ValueError as e:
+        return "", {"error": str(e)}
     model = src_cfg.get("model", "PaddleOCR-VL-1.6")
     optional = src_cfg.get("optional_payload") or {}
     headers = {"Authorization": f"bearer {api_key}"}
 
-    # 提交
-    file_str = str(file_path)
-    if file_str.startswith("http"):
-        headers["Content-Type"] = "application/json"
-        payload = {"fileUrl": file_str, "model": model, "optionalPayload": optional}
-        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
-    else:
-        data = {"model": model, "optionalPayload": json.dumps(optional)}
-        with open(file_str, "rb") as f:
-            resp = requests.post(endpoint, headers=headers, data=data, files={"file": f}, timeout=120)
-    if resp.status_code != 200:
-        return "", {"error": f"cloud submit HTTP {resp.status_code}: {resp.text[:300]}"}
-    job_id = resp.json()["data"]["jobId"]
+    try:
+        # 提交
+        file_str = str(file_path)
+        if file_str.startswith("http"):
+            headers["Content-Type"] = "application/json"
+            payload = {"fileUrl": file_str, "model": model, "optionalPayload": optional}
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        else:
+            data = {"model": model, "optionalPayload": json.dumps(optional)}
+            with open(file_str, "rb") as f:
+                resp = requests.post(endpoint, headers=headers, data=data, files={"file": f}, timeout=120)
+        if resp.status_code != 200:
+            return "", {"error": f"cloud submit HTTP {resp.status_code}: {resp.text[:300]}"}
+        job_id = resp.json().get("data", {}).get("jobId")
+        if not job_id:
+            return "", {"error": f"cloud submit 响应无 jobId: {resp.text[:300]}"}
+    except requests.exceptions.RequestException as e:
+        return "", {"error": f"cloud 提交网络异常: {e}"}
+    except ValueError as e:
+        return "", {"error": f"cloud 响应解析失败: {e}"}
 
-    # 轮询
-    t0 = time.time()
-    while time.time() - t0 < max_wait_s:
-        r = requests.get(f"{endpoint}/{job_id}", headers=headers, timeout=60)
-        state = r.json()["data"]["state"]
-        if state == "done":
-            jsonl_url = r.json()["data"]["resultUrl"]["jsonUrl"]
-            break
-        if state == "failed":
-            return "", {"error": f"cloud job failed: {r.json()['data'].get('errorMsg')}"}
-        time.sleep(5)
-    else:
-        return "", {"error": "cloud job timeout"}
+    try:
+        # 轮询
+        t0 = time.time()
+        while time.time() - t0 < max_wait_s:
+            try:
+                r = requests.get(f"{endpoint}/{job_id}", headers=headers, timeout=60)
+                data = r.json().get("data", {})
+            except (requests.exceptions.RequestException, ValueError) as e:
+                time.sleep(5)
+                continue  # 网络抖动重试轮询
+            state = data.get("state")
+            if state == "done":
+                jsonl_url = data.get("resultUrl", {}).get("jsonUrl")
+                if not jsonl_url:
+                    return "", {"error": "cloud job done 但无 resultUrl"}
+                break
+            if state == "failed":
+                return "", {"error": f"cloud job failed: {data.get('errorMsg')}"}
+            time.sleep(5)
+        else:
+            return "", {"error": "cloud job timeout"}
 
-    jr = requests.get(jsonl_url, timeout=60)
-    lines = jr.text.strip().split("\n")
-    texts = []
-    for line in lines:
-        if not line.strip():
-            continue
-        result = json.loads(line)["result"]
-        for res in result.get("layoutParsingResults", []):
-            texts.append(res["markdown"]["text"])
-    return "\n\n".join(texts), {"source": "cloud", "job_id": job_id}
+        jr = requests.get(jsonl_url, timeout=60)
+        if jr.status_code != 200:
+            return "", {"error": f"cloud 结果下载 HTTP {jr.status_code}"}
+        lines = jr.text.strip().split("\n")
+        texts = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                result = json.loads(line)["result"]
+            except (json.JSONDecodeError, KeyError) as e:
+                continue  # 跳过坏行
+            for res in result.get("layoutParsingResults", []):
+                texts.append(res["markdown"]["text"])
+        if not texts:
+            return "", {"error": "cloud job 完成但无 layoutParsingResults"}
+        return "\n\n".join(texts), {"source": "cloud", "job_id": job_id}
+    except requests.exceptions.RequestException as e:
+        return "", {"error": f"cloud 轮询/下载网络异常: {e}"}
+    except Exception as e:
+        return "", {"error": f"cloud 处理异常: {type(e).__name__}: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -182,15 +214,22 @@ def call_cloud_aistudio(engine, src_cfg, file_path, max_wait_s=300):
 # ---------------------------------------------------------------------------
 def call(name, img_path, prompt=None, temp=0, max_tokens=None, source=None, server_manager=None):
     """Unified engine call. source=None → engine.default_source."""
-    engine, src = get_engine(name, source)
-    src_cfg = engine["sources"][src]
-    prompt = prompt if prompt is not None else engine.get("prompt", "")
-    max_tokens = max_tokens or engine.get("max_tokens", 4096)
+    try:
+        engine, src = get_engine(name, source)
+        src_cfg = engine["sources"][src]
+        prompt = prompt if prompt is not None else engine.get("prompt", "")
+        max_tokens = max_tokens or engine.get("max_tokens", 4096)
 
-    if src == "local":
-        if server_manager is not None:
-            ensure_local_server(name, server_manager)
-        return call_local(engine, src_cfg, img_path, prompt, temp=temp, max_tokens=max_tokens)
-    else:  # cloud
-        # 目前只支持 PaddleOCR AI Studio job 模式
-        return call_cloud_aistudio(engine, src_cfg, img_path)
+        if src == "local":
+            if server_manager is not None:
+                ensure_local_server(name, server_manager)
+            return call_local(engine, src_cfg, img_path, prompt, temp=temp, max_tokens=max_tokens)
+        else:  # cloud
+            # 目前只支持 PaddleOCR AI Studio job 模式
+            return call_cloud_aistudio(engine, src_cfg, img_path)
+    except ValueError as e:
+        return "", {"error": str(e)}
+    except KeyError as e:
+        return "", {"error": str(e)}
+    except Exception as e:
+        return "", {"error": f"{type(e).__name__}: {e}"}
