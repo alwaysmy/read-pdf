@@ -37,15 +37,21 @@ scripts/
 
 ### 数据流
 
+**核心抽象：一切引擎都是「url + key 的 server」**——本地引擎和云端引擎本质相同，区别只在于 local 模式需要先确保服务在跑。
+
 ```
-extract_pdf.py --glm
-  └─ engines.get("glm")            # 从 config 读: mode/endpoint/api_key
-       └─ if mode == "local":
-            server_manager.ensure("glm")   # 确保 llama-server 已启动
-       └─ engines.call("glm", img, prompt) # POST {endpoint}/chat/completions
+engines.call("glm", img, prompt)
+  ├─ 读配置: endpoint / api_key / message_order / output_format
+  ├─ if mode == "local":
+  │     server_manager.ensure("glm")   # 唯一多出的环节：检查本地服务，没起就启动
+  │     （云引擎跳过此步，直接连远程 url）
+  └─ POST {endpoint}/chat/completions   # 本地云端走同一 HTTP 调用路径
 ```
 
-**核心原则**：`extract_pdf.py` 永远不直接知道端口/进程/模型路径——它只拿 `engines.call()` 的返回值。
+**要点**：
+- `server_manager.ensure()` = 检查端口 → 没服务就 `llama-server` 启动 → 等就绪（与现状逻辑一致，只是独立成模块）
+- 云端引擎 `server: null`，ensure 直接跳过 → 天然支持"本机零配置直接调云 API"
+- `extract_pdf.py` 永远不直接知道端口/进程/模型路径——它只拿 `engines.call()` 的返回值
 
 ---
 
@@ -62,6 +68,7 @@ extract_pdf.py --glm
       "prompt": "Text Recognition:",
       "max_tokens": 4096,
       "message_order": "image-first",
+      "output_format": "markdown",   # 返回值格式: text|markdown|html —— 调用方按此处理
       "server": {
         "exe": "llama-server.exe",
         "model": "D:/llm/ggml-org/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf",
@@ -77,6 +84,7 @@ extract_pdf.py --glm
       "prompt": "OCR markdown",
       "max_tokens": 8192,
       "message_order": "text-first",
+      "output_format": "markdown",
       "server": { ... }
     },
     "baidu_ocr": {
@@ -85,12 +93,14 @@ extract_pdf.py --glm
       "api_key": "${BAIDU_API_KEY}",
       "api_secret": "${BAIDU_SECRET_KEY}",
       "auth_endpoint": "https://aip.baidubce.com/oauth/2.0/token",
+      "output_format": "text",        # 百度 OCR 返回纯文本行（无 Markdown/公式）
       "server": null
     },
     "cloud_glm": {
       "mode": "cloud",
       "endpoint": "https://api.bigmodel.cn/api/paas/v4/chat/completions",
       "api_key": "${ZHIPU_API_KEY}",
+      "output_format": "markdown",
       "server": null
     }
   },
@@ -106,6 +116,7 @@ extract_pdf.py --glm
 |---|---|
 | `mode: local\|cloud` | local 需 `server_manager` 启服务；cloud 直接请求远程，**不发本地进程** |
 | `message_order: image-first\|text-first` | GLM 系 image 在前；DeepSeek-OCR 系 text 在前（现有 `http_extract_text_first` 的逻辑） |
+| `output_format: text\|markdown\|html` | 返回值格式声明。调用方按此处理：markdown/html 直接落盘，text 需自行转 md（如百度 OCR 纯文本行） |
 | `api_key: ${ENV_VAR}` | 云端密钥从环境变量读，不进仓库（安全） |
 | `server: null` | 云端引擎无本地服务段 |
 | `engine_config.local.json` | 本机覆盖：合并进主配置，改路径/端口/加引擎不提交 |
@@ -190,6 +201,21 @@ extract_pdf.py --glm
 | 百度 OCR 无版面/公式 | 定位为文本兜底引擎，SKILL.md 说明适用场景 |
 | 大改动影响现有流程 | 引擎函数签名不变；本地回归测试保底；worktree 分支开发，cherry-pick 决策 |
 | 本机覆盖配置失效 | local.json 显式合并逻辑 + 加载日志打印生效引擎配置 |
+
+## 8.5 引擎实测对比（2026-08-08，设计依据）
+
+同页（《微弱信号检测》p20，公式+数值表格）三引擎实测：
+
+| 维度 | PaddleOCR Hybrid | GLM-OCR | DeepSeek-OCR |
+|---|---|---|---|
+| 公式（下标保真） | ✅ `$SNR_{p}$`、`$$\frac{...}{...}$$` | ✅ `$SNR_{\mathrm{p}}$` | ❌ `SNR` 丢下标、`SNR_r` 误识 |
+| 数值表格 | ✅ HTML `<table>` 数据正确、无幻觉 | ✅ Markdown 表正确 | ❌ 整行重复幻觉 |
+| 表头 | ✅ | ✅ | ❌ 丢失 |
+| bbox 注释 | ✅ 每块带 | ❌ | ❌ |
+| 章节标题 | ✅ `### 第1章` | ⚠️ 部分 | ✅ 页码+标题 |
+| 速度/页 | ~2.5s | ~2.1s | **~1.4s（最快）** |
+
+**结论**：公式/表格质量 **Hybrid ≈ GLM > DeepSeek**；速度 **DeepSeek > GLM > Hybrid**。Hybrid 表格带 HTML+bbox 略优，GLM 公式编号格式更规范。默认引擎维持 Hybrid（质量最稳），DS 仅作纯文本扫描件提速备选。
 
 ## 9. 待傅师傅确认
 
