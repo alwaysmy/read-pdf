@@ -50,8 +50,18 @@ def _check_auth():
 def _run_cli(args, timeout=900):
     """Run extract_pdf.py subprocess, return (ok, result_dict)."""
     cmd = [sys.executable, str(SCRIPT)] + args
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired as e:
+        # 超时：尽力终止子进程，返回可诊断错误
+        try:
+            proc = e.process
+            if proc is not None:
+                proc.kill()
+        except Exception:
+            pass
+        return False, {"error": f"处理超时（>{timeout}s），已终止", "timeout": True}
     stdout = proc.stdout or ""
     # extract_pdf.py --json 打印多行 JSON；提取第一个 { 到最后一个 } 的完整块
     result = None
@@ -64,7 +74,43 @@ def _run_cli(args, timeout=900):
             result = None
     if result is None and proc.returncode != 0:
         return False, {"error": (proc.stderr or stdout)[-500:]}
-    return proc.returncode == 0, (result or {"raw": stdout[-500:]})
+    if result is None:
+        # 退出码 0 但没解析出 JSON → 异常，返回 500 级错误（不再静默 raw）
+        return False, {"error": f"输出解析失败（returncode={proc.returncode}）: {(proc.stderr or stdout)[-500:]}"}
+    return proc.returncode == 0, result
+
+
+# 输入校验（防 CLI flag 注入 / DoS）
+ENGINE_WHITELIST = {"auto", "hybrid", "glm", "dsocr"}
+SOURCE_CHOICES = {"local", "cloud"}
+DPI_RANGE = (50, 600)
+
+
+def _validate_body(body):
+    """校验请求体，返回 (error_msg, None) 或 (None, 规范化后的 body)."""
+    eng = body.get("engine", "auto")
+    if eng not in ENGINE_WHITELIST:
+        return f"engine 必须是 {sorted(ENGINE_WHITELIST)} 之一，got '{eng}'", None
+    src = body.get("source")
+    if src is not None and src not in SOURCE_CHOICES:
+        return f"source 必须是 {sorted(SOURCE_CHOICES)} 之一，got '{src}'", None
+    dpi = body.get("dpi")
+    if dpi is not None:
+        try:
+            dpi = int(dpi)
+        except (TypeError, ValueError):
+            return f"dpi 必须是整数，got '{dpi}'", None
+        if not (DPI_RANGE[0] <= dpi <= DPI_RANGE[1]):
+            return f"dpi 超出范围 {DPI_RANGE}（防渲染内存爆炸），got {dpi}", None
+        body["dpi"] = dpi
+    od = body.get("output_dir")
+    if od is not None:
+        p = pathlib.Path(od)
+        if p.is_absolute() and not str(p).startswith("\\\\"):
+            pass  # 绝对本地路径允许（Windows UNC 排除）
+        elif ".." in od.split("/") or ".." in od.split("\\"):
+            return f"output_dir 不允许路径穿越: {od}", None
+    return None, body
 
 
 @app.route("/health", methods=["GET"])
@@ -86,6 +132,9 @@ def extract():
     if not _check_auth():
         return jsonify({"error": "unauthorized"}), 401
     body = request.get_json(force=True, silent=True) or {}
+    err, body = _validate_body(body)
+    if err:
+        return jsonify({"error": err}), 400
     pdf = body.get("pdf")
     if not pdf or not pathlib.Path(pdf).exists():
         return jsonify({"error": f"pdf 不存在: {pdf}"}), 400
@@ -115,14 +164,20 @@ def layout():
     if not _check_auth():
         return jsonify({"error": "unauthorized"}), 401
     body = request.get_json(force=True, silent=True) or {}
+    err, body = _validate_body(body)
+    if err:
+        return jsonify({"error": err}), 400
     pdf = body.get("pdf")
     if not pdf or not pathlib.Path(pdf).exists():
         return jsonify({"error": f"pdf 不存在: {pdf}"}), 400
     args = [pdf, "--layout"]
     if body.get("pages"):
         args += ["--pages", str(body["pages"])]
-    if body.get("device"):
-        args += ["--layout-device", body["device"]]
+    device = body.get("device")
+    if device:
+        if device not in ("gpu", "cpu"):
+            return jsonify({"error": f"device 必须是 gpu|cpu，got '{device}'"}), 400
+        args += ["--layout-device", device]
     if body.get("output_dir"):
         args += ["--output-dir", str(body["output_dir"])]
     args += ["--json"]

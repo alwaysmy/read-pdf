@@ -107,8 +107,10 @@ def start(name, server_cfg):
         print(f"[server_manager] 引擎 '{name}' 以 CPU 模式启动", flush=True)
 
     print(f"[server_manager] 启动 {name} (port {port}, {device})...", flush=True)
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _started_servers.append((name, proc))
+    import tempfile as _tf
+    _err_file = _tf.NamedTemporaryFile(prefix=f"llama_{name}_", suffix=".log", delete=False)
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=_err_file)
+    _started_servers.append((name, proc, _err_file.name))
 
     # 等待就绪：先等端口，再等 /health（模型加载完成）——避免冷启动前几页失败
     import requests as _req
@@ -132,7 +134,17 @@ def start(name, server_cfg):
         except Exception:
             pass
         if proc.poll() is not None:
-            raise RuntimeError(f"[server_manager] {name} 启动失败 (exit {proc.returncode})")
+            # 启动失败：打印 stderr 尾部帮助诊断
+            tail = ""
+            try:
+                with open(_err_file.name, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                tail = "".join(lines[-15:])
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"[server_manager] {name} 启动失败 (exit {proc.returncode})\n"
+                f"  日志尾部:\n{tail}")
         time.sleep(0.5)
     raise RuntimeError(f"[server_manager] {name} /health 超时 (port {port})")
 
@@ -150,7 +162,9 @@ def stop(name=None):
     """Stop server(s). name=None → stop all started by this session."""
     global _started_servers
     remaining = []
-    for n, proc in _started_servers:
+    for entry in _started_servers:
+        n, proc = entry[0], entry[1]
+        err_file = entry[2] if len(entry) > 2 else None
         if name is None or n == name:
             try:
                 proc.terminate()
@@ -161,8 +175,13 @@ def stop(name=None):
                 except Exception:
                     pass
             print(f"[server_manager] 已停止 {n}", flush=True)
+            if err_file:
+                try:
+                    os.unlink(err_file)
+                except Exception:
+                    pass
         else:
-            remaining.append((n, proc))
+            remaining.append(entry)
     _started_servers = remaining
 
 
