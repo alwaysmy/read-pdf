@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地测试产物（按需保留）
+tests/*_output/
