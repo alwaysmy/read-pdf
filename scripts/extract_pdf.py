@@ -128,6 +128,19 @@ def start_server(name):
 
 
 def ensure_server(name):
+    """Ensure server running. Config-managed engines → server_manager; legacy (qwen) → SERVERS."""
+    try:
+        from engines import get_engine
+        engine, src = get_engine(name)
+        if src == "local":
+            import server_manager
+            server_manager.ensure(name, engine["sources"]["local"].get("server"))
+            return
+        # cloud source: no local server needed
+        return
+    except KeyError:
+        pass
+    # Legacy engine (qwen etc.) — fall back to SERVERS dict
     if not is_port_open(SERVERS[name]["port"]):
         start_server(name)
 
@@ -186,17 +199,26 @@ def http_extract(port, prompt, img_path, temp=0, max_tokens=4096):
         return "", {"error": str(e)}
 
 
+def _engines_call(name, img_path, prompt=None, source=None):
+    """Route engine call through engines.py (config-driven local/cloud)."""
+    import engines
+    try:
+        return engines.call(name, img_path, prompt=prompt, source=source)
+    except KeyError as e:
+        return "", {"error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # Engine-specific extractors
 # ---------------------------------------------------------------------------
-def extract_llama(img_path):
+def extract_llama(img_path, source=None):
     """PaddleOCR-VL GGUF — more context detail."""
-    return http_extract(12336, "OCR:", img_path, temp=0, max_tokens=4096)
+    return _engines_call("hybrid", img_path, prompt="OCR:", source=source)
 
 
-def extract_glm(img_path):
+def extract_glm(img_path, source=None):
     """GLM-OCR Q8_0 — primary image PDF engine, markdown + LaTeX."""
-    return http_extract(12335, "Text Recognition:", img_path, temp=0, max_tokens=4096)
+    return _engines_call("glm", img_path, source=source)
 
 
 def http_extract_text_first(port, prompt, img_path, temp=0, max_tokens=8192):
@@ -229,9 +251,9 @@ def http_extract_text_first(port, prompt, img_path, temp=0, max_tokens=8192):
         return "", {"error": str(e)}
 
 
-def extract_dsocr(img_path):
+def extract_dsocr(img_path, source=None):
     """DeepSeek-OCR Q8_0 — text-first OCR, markdown + layout, fast (~0.8s/page)."""
-    return http_extract_text_first(12337, "OCR markdown", img_path, temp=0, max_tokens=8192)
+    return _engines_call("dsocr", img_path, source=source)
 
 
 def extract_qwen(img_path):
@@ -303,7 +325,7 @@ def _qwen_postprocess(text):
     return text
 
 
-def extract_hybrid(img_path):
+def extract_hybrid(img_path, source=None):
     """PaddleOCR Hybrid — Python layout detection + GGUF VL, structured blocks."""
     try:
         from paddleocr import PaddleOCRVL
@@ -547,6 +569,7 @@ def parse_args():
     p.add_argument("--layout-device", default="cpu", choices=["cpu", "gpu"], help="Layout detection device (default cpu, GPU 被 OCR 服务占用时用 CPU)")
     p.add_argument("--no-cache", action="store_true", help="Disable extraction cache (default: cache enabled)")
     p.add_argument("--refresh-cache", action="store_true", help="Force re-OCR and refresh cache (ignore existing cache)")
+    p.add_argument("--source", default=None, choices=["local", "cloud"], help="Temporarily switch service source (overrides engine default_source)")
     # --- Deprecated ---
     p.add_argument("--vl", action="store_true", help="[DEPRECATED] PaddleOCRVL native (use --hybrid instead)")
     p.add_argument("--llama", action="store_true", help="[DEPRECATED] PaddleOCR-VL GGUF (use --hybrid instead)")
@@ -846,7 +869,11 @@ def main():
         extract_fn = extract_llama
         suffix = "md"
     elif engine == "hybrid":
-        extract_fn = extract_hybrid
+        if args.source == "cloud":
+            # --source cloud: hybrid 切到云端 PaddleOCR-VL（同款模型 job 模式）
+            extract_fn = lambda img, source=None: _engines_call("paddle_vl", img, source="cloud")
+        else:
+            extract_fn = extract_hybrid
         suffix = "md"
     elif engine == "audit":
         extract_fn = extract_qwen
@@ -890,7 +917,7 @@ def main():
                     dt = time.time() - t0
                 else:
                     page_num = batch[0]
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_d{args.dpi}"
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{args.source or 'default'}_d{args.dpi}"
                     cached = cache_get(cache_dir, key) if cache_dir else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}
@@ -899,7 +926,7 @@ def main():
                         text, stats = "", {}
                         for attempt in range(3):
                             t0 = time.time()
-                            text, stats = extract_fn(tmp_paths[0])
+                            text, stats = extract_fn(tmp_paths[0], source=args.source)
                             dt = time.time() - t0
                             if text:
                                 break
