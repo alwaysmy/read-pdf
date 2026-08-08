@@ -80,3 +80,21 @@
 - 基线：main 分支（重构前 extract_pdf.py，P1/P3 版）
 - 对比：feat/decouple-engines（重构后）
 - 指标：同 PDF 同页输出是否一致（glm/hybrid 各 1 页，diff 输出文件）
+
+---
+
+## 5. 执行结果（2026-08-08 全量）
+
+| 套件 | 结果 | 耗时 |
+|---|---|---|
+| unit_engines.py | ✅ 6 项 | 0.1s |
+| unit_server_manager.py | ✅ 5 项 | 0.2s |
+| test_friendly_hint.py | ✅ 2 场景 | 0.2s |
+| test_mcp_tools.py | ✅ 4 项（需本体服务） | ~20s |
+| 聚合脚本 | tests/run_all_tests.py（一键全跑+存档） | |
+
+**发现并修复**：
+- MCP 字段错位：chars/layout_path 不存在 → size_bytes/tables/layout_json（extract_pdf.py layout JSON 补 total_blocks/total_crops）
+- gitignore 误伤 bench 脚本（!tests/bench_*.py 白名单）
+
+**基线对比**：glm p20 重构前后 3549B 哈希一致；hybrid 4183B 一致。

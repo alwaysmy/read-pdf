@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "readpdf": {
+      "command": "python",
+      "args": [
+        "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\scripts\\mcp_server.py"
+      ],
+      "env": {
+        "READPDF_SERVER_URL": "http://127.0.0.1:8123"
+      }
+    }
+  }
+}
