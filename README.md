@@ -13,8 +13,11 @@ PDF 提取 skill：文本层提取（pdfmux + pdfplumber）→ OCR 引擎（Padd
 
 ## 快速开始
 
+> ⚠️ **新用户必读**：本工具依赖本地 llama-server + GGUF 模型（或云源），**不能 clone 即用**。
+> 完整安装/配置步骤见 **[docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)**（装依赖 → 下模型 → 改 `engine_config.local.yaml` → 验证）。
+
 ```powershell
-# 文本 PDF
+# 文本 PDF（无需模型/GPU，clone 后装好依赖即可用）
 python scripts/extract_pdf.py book.pdf
 
 # 图像 PDF（默认 hybrid）

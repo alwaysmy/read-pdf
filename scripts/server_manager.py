@@ -69,8 +69,24 @@ def start(name, server_cfg):
     exe = server_cfg.get("exe", "llama-server.exe")
     exe_path = os.path.join(llama_dir, exe) if llama_dir and not os.path.isabs(exe) else exe
     if not os.path.exists(exe_path):
-        print(f"[server_manager] WARNING: 找不到 {exe_path}，请更新 engine_config.local.yaml 的 defaults.llama_dir", flush=True)
+        print(
+            f"[server_manager] 找不到 llama-server: {exe_path}\n"
+            f"  → 首次使用请按 docs/SETUP_GUIDE.md 配置：\n"
+            f"    1) 下载 llama.cpp Windows 二进制\n"
+            f"    2) 在 engine_config.local.yaml 的 defaults.llama_dir 填解压目录\n"
+            f"    3) 若没有本地模型/GPU，可用云源: python scripts/extract_pdf.py x.pdf --source cloud（需 token）",
+            flush=True)
         raise FileNotFoundError(exe_path)
+
+    # 模型/投影文件存在性校验（提前给出友好提示）
+    for fkey in ("model", "mmproj"):
+        fpath = server_cfg.get(fkey, "")
+        if fpath and not os.path.exists(fpath):
+            print(
+                f"[server_manager] 找不到引擎 '{name}' 的 {fkey}: {fpath}\n"
+                f"  → 请按 docs/SETUP_GUIDE.md 下载模型，并在 engine_config.local.yaml 填正确路径",
+                flush=True)
+            raise FileNotFoundError(fpath)
 
     args = [exe_path, "-m", server_cfg["model"], "--mmproj", server_cfg["mmproj"],
             "--port", str(port := server_cfg.get("port", 0)), "--host", "127.0.0.1"]
