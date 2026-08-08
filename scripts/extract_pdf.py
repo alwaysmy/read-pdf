@@ -668,6 +668,10 @@ def main():
         detection_info["is_image_pdf"] = use_ocr
 
     # Determine engine + ensure servers
+    # 前置校验：--source cloud 只对 hybrid（走 paddle_vl）有效；glm/dsocr 无云源
+    if args.source == "cloud" and (args.glm or args.dsocr):
+        print(f"ERROR: 引擎 'glm|dsocr' 没有 cloud 源（engine_config.yaml 仅配置 local），无法 --source cloud", flush=True)
+        sys.exit(1)
     if args.text_only:
         engine = "text"
     elif args.audit or args.html:
@@ -887,6 +891,17 @@ def main():
         extract_fn = extract_ocr
         suffix = "md"
 
+    # 解析生效源（供缓存 key 与校验用）
+    effective_source = args.source
+    if engine in ("hybrid", "llama") and args.source == "cloud":
+        effective_source = "cloud"  # hybrid cloud 走 paddle_vl（云）
+    elif engine in ("glm", "dsocr", "hybrid") and args.source is None:
+        try:
+            import engines as _eng
+            _, effective_source = _eng.get_engine(engine, None)
+        except KeyError:
+            effective_source = "local"
+
     out_folder, out_path, _unused_imgs = make_output_folder(pdf_path.stem, suffix, args.output_dir, page_suffix)
     pages_data = []
 
@@ -922,7 +937,7 @@ def main():
                     dt = time.time() - t0
                 else:
                     page_num = batch[0]
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{args.source or 'default'}_d{args.dpi}"
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}"
                     cached = cache_get(cache_dir, key) if cache_dir else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}
