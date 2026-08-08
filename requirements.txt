@@ -1,0 +1,19 @@
+# read-pdf 依赖（Python 3.10+，建议 3.11）
+# 本地 OCR 引擎（paddle 系，GPU 版按需）
+paddlepaddle-gpu>=3.0       # 无 GPU 改用 paddlepaddle（CPU）
+paddleocr>=3.0
+paddlex>=3.0
+
+# PDF 处理
+PyMuPDF>=1.24
+pdfplumber>=0.11
+pdfmux>=0.1
+
+# 通用
+requests>=2.31
+PyYAML>=6.0
+Pillow>=10.0
+numpy>=1.24
+
+# 本体服务（server.py）
+Flask>=3.0

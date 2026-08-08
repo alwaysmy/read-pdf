@@ -1,0 +1,29 @@
+{
+  "pdf": "D:\\MyProjects\\整理中\\文件整理工作所有的没整理文件都放在这里好了\\202404\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴.pdf",
+  "page": 20,
+  "dpi": 150,
+  "tag": "20260808_120328",
+  "layout_v3": {
+    "time_s": 14.77,
+    "blocks": 31,
+    "labels": [
+      "chart",
+      "display_formula",
+      "figure_title",
+      "formula_number",
+      "header",
+      "image",
+      "number",
+      "paragraph_title",
+      "text"
+    ],
+    "crops": 4,
+    "error": null
+  },
+  "hybrid": {
+    "time_s": 9.07,
+    "chars": 2057,
+    "error": null,
+    "content_blocks": 26
+  }
+}

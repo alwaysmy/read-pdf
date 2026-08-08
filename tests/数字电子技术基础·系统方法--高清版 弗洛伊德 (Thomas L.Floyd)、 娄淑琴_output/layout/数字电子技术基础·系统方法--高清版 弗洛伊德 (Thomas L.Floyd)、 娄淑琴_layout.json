@@ -1,0 +1,948 @@
+{
+  "status": "ok",
+  "file": "D:\\MyProjects\\整理中\\文件整理工作所有的没整理文件都放在这里好了\\202404\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴.pdf",
+  "engine": "PP-DocLayoutV3",
+  "dpi": 150,
+  "min_score": 0.3,
+  "total_time": 19.5,
+  "pages": [
+    {
+      "page": 20,
+      "blocks": [
+        {
+          "label": "header",
+          "score": 0.878,
+          "bbox": [
+            796,
+            66,
+            968,
+            86
+          ],
+          "page": 20
+        },
+        {
+          "label": "number",
+          "score": 0.723,
+          "bbox": [
+            985,
+            67,
+            999,
+            84
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.93,
+          "bbox": [
+            97,
+            128,
+            971,
+            212
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.941,
+          "bbox": [
+            96,
+            216,
+            519,
+            328
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.911,
+          "bbox": [
+            96,
+            332,
+            517,
+            386
+          ],
+          "page": 20
+        },
+        {
+          "label": "image",
+          "score": 0.889,
+          "bbox": [
+            602,
+            221,
+            898,
+            338
+          ],
+          "page": 20,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0020_crop000_image.png"
+        },
+        {
+          "label": "figure_title",
+          "score": 0.826,
+          "bbox": [
+            674,
+            345,
+            816,
+            366
+          ],
+          "page": 20
+        },
+        {
+          "label": "display_formula",
+          "score": 0.871,
+          "bbox": [
+            268,
+            393,
+            345,
+            435
+          ],
+          "page": 20
+        },
+        {
+          "label": "formula_number",
+          "score": 0.831,
+          "bbox": [
+            463,
+            403,
+            514,
+            424
+          ],
+          "page": 20
+        },
+        {
+          "label": "image",
+          "score": 0.829,
+          "bbox": [
+            529,
+            385,
+            966,
+            430
+          ],
+          "page": 20,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0020_crop001_image.png"
+        },
+        {
+          "label": "display_formula",
+          "score": 0.893,
+          "bbox": [
+            268,
+            444,
+            347,
+            491
+          ],
+          "page": 20
+        },
+        {
+          "label": "figure_title",
+          "score": 0.811,
+          "bbox": [
+            700,
+            433,
+            802,
+            452
+          ],
+          "page": 20
+        },
+        {
+          "label": "formula_number",
+          "score": 0.832,
+          "bbox": [
+            463,
+            455,
+            514,
+            476
+          ],
+          "page": 20
+        },
+        {
+          "label": "figure_title",
+          "score": 0.856,
+          "bbox": [
+            643,
+            458,
+            857,
+            480
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.915,
+          "bbox": [
+            97,
+            496,
+            970,
+            551
+          ],
+          "page": 20
+        },
+        {
+          "label": "display_formula",
+          "score": 0.906,
+          "bbox": [
+            413,
+            558,
+            657,
+            599
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.775,
+          "bbox": [
+            140,
+            610,
+            892,
+            637
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.715,
+          "bbox": [
+            218,
+            644,
+            620,
+            668
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.928,
+          "bbox": [
+            95,
+            673,
+            533,
+            786
+          ],
+          "page": 20
+        },
+        {
+          "label": "image",
+          "score": 0.899,
+          "bbox": [
+            546,
+            677,
+            969,
+            797
+          ],
+          "page": 20,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0020_crop002_image.png"
+        },
+        {
+          "label": "figure_title",
+          "score": 0.811,
+          "bbox": [
+            718,
+            812,
+            799,
+            833
+          ],
+          "page": 20
+        },
+        {
+          "label": "display_formula",
+          "score": 0.887,
+          "bbox": [
+            182,
+            792,
+            437,
+            836
+          ],
+          "page": 20
+        },
+        {
+          "label": "display_formula",
+          "score": 0.844,
+          "bbox": [
+            142,
+            845,
+            548,
+            890
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.902,
+          "bbox": [
+            96,
+            897,
+            973,
+            951
+          ],
+          "page": 20
+        },
+        {
+          "label": "paragraph_title",
+          "score": 0.86,
+          "bbox": [
+            98,
+            959,
+            464,
+            985
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.941,
+          "bbox": [
+            96,
+            995,
+            970,
+            1078
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.926,
+          "bbox": [
+            97,
+            1083,
+            970,
+            1135
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.614,
+          "bbox": [
+            142,
+            1139,
+            972,
+            1167
+          ],
+          "page": 20
+        },
+        {
+          "label": "text",
+          "score": 0.958,
+          "bbox": [
+            95,
+            1199,
+            419,
+            1398
+          ],
+          "page": 20
+        },
+        {
+          "label": "chart",
+          "score": 0.866,
+          "bbox": [
+            435,
+            1177,
+            972,
+            1355
+          ],
+          "page": 20,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0020_crop003_chart.png"
+        },
+        {
+          "label": "figure_title",
+          "score": 0.872,
+          "bbox": [
+            486,
+            1370,
+            916,
+            1393
+          ],
+          "page": 20
+        }
+      ]
+    },
+    {
+      "page": 21,
+      "blocks": [
+        {
+          "label": "number",
+          "score": 0.683,
+          "bbox": [
+            93,
+            65,
+            107,
+            81
+          ],
+          "page": 21
+        },
+        {
+          "label": "header",
+          "score": 0.861,
+          "bbox": [
+            123,
+            64,
+            344,
+            83
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.924,
+          "bbox": [
+            118,
+            125,
+            991,
+            180
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.792,
+          "bbox": [
+            163,
+            184,
+            991,
+            209
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.955,
+          "bbox": [
+            118,
+            213,
+            579,
+            443
+          ],
+          "page": 21
+        },
+        {
+          "label": "chart",
+          "score": 0.661,
+          "bbox": [
+            593,
+            227,
+            989,
+            412
+          ],
+          "page": 21,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0021_crop004_chart.png"
+        },
+        {
+          "label": "image",
+          "score": 0.574,
+          "bbox": [
+            593,
+            227,
+            989,
+            412
+          ],
+          "page": 21,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0021_crop005_image.png"
+        },
+        {
+          "label": "paragraph_title",
+          "score": 0.854,
+          "bbox": [
+            122,
+            451,
+            302,
+            475
+          ],
+          "page": 21
+        },
+        {
+          "label": "figure_title",
+          "score": 0.846,
+          "bbox": [
+            692,
+            436,
+            891,
+            458
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.827,
+          "bbox": [
+            164,
+            486,
+            580,
+            509
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.955,
+          "bbox": [
+            118,
+            515,
+            992,
+            657
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.957,
+          "bbox": [
+            118,
+            660,
+            572,
+            859
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.96,
+          "bbox": [
+            119,
+            865,
+            573,
+            1062
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.956,
+          "bbox": [
+            119,
+            1067,
+            572,
+            1238
+          ],
+          "page": 21
+        },
+        {
+          "label": "image",
+          "score": 0.923,
+          "bbox": [
+            590,
+            681,
+            989,
+            763
+          ],
+          "page": 21,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0021_crop006_image.png"
+        },
+        {
+          "label": "image",
+          "score": 0.88,
+          "bbox": [
+            627,
+            801,
+            956,
+            1055
+          ],
+          "page": 21,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0021_crop007_image.png"
+        },
+        {
+          "label": "figure_title",
+          "score": 0.85,
+          "bbox": [
+            644,
+            1064,
+            952,
+            1104
+          ],
+          "page": 21
+        },
+        {
+          "label": "figure_title",
+          "score": 0.876,
+          "bbox": [
+            577,
+            1130,
+            981,
+            1176
+          ],
+          "page": 21
+        },
+        {
+          "label": "text",
+          "score": 0.95,
+          "bbox": [
+            118,
+            1242,
+            996,
+            1385
+          ],
+          "page": 21
+        }
+      ]
+    },
+    {
+      "page": 22,
+      "blocks": [
+        {
+          "label": "header",
+          "score": 0.873,
+          "bbox": [
+            801,
+            71,
+            972,
+            91
+          ],
+          "page": 22
+        },
+        {
+          "label": "number",
+          "score": 0.733,
+          "bbox": [
+            989,
+            73,
+            1003,
+            90
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.92,
+          "bbox": [
+            102,
+            135,
+            973,
+            193
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.915,
+          "bbox": [
+            101,
+            198,
+            561,
+            250
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.853,
+          "bbox": [
+            145,
+            255,
+            557,
+            280
+          ],
+          "page": 22
+        },
+        {
+          "label": "image",
+          "score": 0.933,
+          "bbox": [
+            576,
+            202,
+            972,
+            296
+          ],
+          "page": 22,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0022_crop008_image.png"
+        },
+        {
+          "label": "display_formula",
+          "score": 0.915,
+          "bbox": [
+            212,
+            286,
+            453,
+            331
+          ],
+          "page": 22
+        },
+        {
+          "label": "figure_title",
+          "score": 0.826,
+          "bbox": [
+            734,
+            311,
+            814,
+            331
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.863,
+          "bbox": [
+            101,
+            337,
+            563,
+            390
+          ],
+          "page": 22
+        },
+        {
+          "label": "display_formula",
+          "score": 0.86,
+          "bbox": [
+            465,
+            396,
+            612,
+            420
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.915,
+          "bbox": [
+            102,
+            424,
+            970,
+            507
+          ],
+          "page": 22
+        },
+        {
+          "label": "image",
+          "score": 0.625,
+          "bbox": [
+            578,
+            461,
+            966,
+            490
+          ],
+          "page": 22,
+          "crop_path": "D:\\MyProjects\\AGENT方法库\\skills\\read-pdf-wt-borrow\\tests\\数字电子技术基础·系统方法--高清版 弗洛伊德 (Thomas L.Floyd)、 娄淑琴_output\\layout\\crops\\page0022_crop009_image.png"
+        },
+        {
+          "label": "figure_title",
+          "score": 0.75,
+          "bbox": [
+            732,
+            506,
+            813,
+            526
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.826,
+          "bbox": [
+            147,
+            512,
+            509,
+            536
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.906,
+          "bbox": [
+            101,
+            542,
+            973,
+            596
+          ],
+          "page": 22
+        },
+        {
+          "label": "paragraph_title",
+          "score": 0.858,
+          "bbox": [
+            101,
+            605,
+            226,
+            631
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.815,
+          "bbox": [
+            102,
+            641,
+            258,
+            665
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.813,
+          "bbox": [
+            101,
+            671,
+            303,
+            694
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.807,
+          "bbox": [
+            101,
+            700,
+            347,
+            724
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.828,
+          "bbox": [
+            101,
+            730,
+            499,
+            753
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.832,
+          "bbox": [
+            101,
+            760,
+            434,
+            783
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.831,
+          "bbox": [
+            101,
+            788,
+            344,
+            812
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.846,
+          "bbox": [
+            101,
+            818,
+            325,
+            841
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.849,
+          "bbox": [
+            100,
+            847,
+            808,
+            872
+          ],
+          "page": 22
+        },
+        {
+          "label": "paragraph_title",
+          "score": 0.872,
+          "bbox": [
+            103,
+            888,
+            285,
+            917
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.956,
+          "bbox": [
+            100,
+            935,
+            971,
+            1047
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.868,
+          "bbox": [
+            145,
+            1052,
+            439,
+            1076
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.864,
+          "bbox": [
+            145,
+            1082,
+            424,
+            1105
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.866,
+          "bbox": [
+            145,
+            1111,
+            379,
+            1134
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.833,
+          "bbox": [
+            145,
+            1141,
+            292,
+            1163
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.823,
+          "bbox": [
+            144,
+            1170,
+            292,
+            1193
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.964,
+          "bbox": [
+            100,
+            1200,
+            971,
+            1341
+          ],
+          "page": 22
+        },
+        {
+          "label": "text",
+          "score": 0.934,
+          "bbox": [
+            100,
+            1346,
+            972,
+            1401
+          ],
+          "page": 22
+        }
+      ]
+    }
+  ]
+}

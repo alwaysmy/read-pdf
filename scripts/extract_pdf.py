@@ -14,6 +14,9 @@ import fitz  # PyMuPDF
 LLAMA_DIR = r"D:\llm\llama-b9830-bin-win-cuda-13.3-x64"
 LLAMA_SERVER = os.path.join(LLAMA_DIR, "llama-server.exe")
 
+# legacy SERVERS（仅供 qwen audit 引擎与 manage_servers.py 使用）
+# 注意: hybrid/glm/dsocr 的服务配置已由 engine_config.yaml 管理（server_manager.py），
+#       此处保留同键条目仅为 manage_servers.py 兼容；改引擎配置请改 engine_config.local.yaml
 SERVERS = {
     "llama": {  # PaddleOCR-VL GGUF — alternative, more context detail
         "port": 12336,
@@ -36,6 +39,18 @@ SERVERS = {
             "--port", "12335", "--host", "127.0.0.1",
             "-ngl", "100", "--no-mmap", "--no-warmup",
             "-c", "16384", "-n", "16384", "-t", "8", "-np", "1",
+            "--api-key", "12345",
+        ],
+    },
+    "dsocr": {  # DeepSeek-OCR Q8_0 — text-first multimodal OCR (P2)
+        "port": 12337,
+        "args": [
+            LLAMA_SERVER,
+            "-m", r"D:\llm\ggml-org\DeepSeek-OCR\DeepSeek-OCR-Q8_0.gguf",
+            "--mmproj", r"D:\llm\ggml-org\DeepSeek-OCR\mmproj-DeepSeek-OCR-Q8_0.gguf",
+            "--port", "12337", "--host", "127.0.0.1",
+            "-ngl", "100", "--no-mmap", "--no-warmup",
+            "-c", "8192", "-n", "8192", "-t", "8", "-np", "1",
             "--api-key", "12345",
         ],
     },
@@ -116,6 +131,19 @@ def start_server(name):
 
 
 def ensure_server(name):
+    """Ensure server running. Config-managed engines → server_manager; legacy (qwen) → SERVERS."""
+    try:
+        from engines import get_engine
+        engine, src = get_engine(name)
+        if src == "local":
+            import server_manager
+            server_manager.ensure(name, engine["sources"]["local"].get("server"))
+            return
+        # cloud source: no local server needed
+        return
+    except KeyError:
+        pass
+    # Legacy engine (qwen etc.) — fall back to SERVERS dict
     if not is_port_open(SERVERS[name]["port"]):
         start_server(name)
 
@@ -143,48 +171,31 @@ atexit.register(cleanup)
 
 # ---------------------------------------------------------------------------
 # HTTP extraction backends
-# ---------------------------------------------------------------------------
-def http_extract(port, prompt, img_path, temp=0, max_tokens=4096):
-    """Generic HTTP extraction via llama-server."""
-    with open(img_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
-    import requests
+def _engines_call(name, img_path, prompt=None, source=None):
+    """Route engine call through engines.py (config-driven local/cloud)."""
+    import engines
     try:
-        resp = requests.post(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            headers={"Authorization": "Bearer 12345"},
-            json={
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-                "temperature": temp,
-                "max_tokens": max_tokens,
-            },
-            timeout=180,
-        )
-        if resp.status_code != 200:
-            return "", {"error": f"HTTP {resp.status_code}"}
-        content = resp.json()["choices"][0]["message"]["content"]
-        return content, {}
-    except Exception as e:
+        return engines.call(name, img_path, prompt=prompt, source=source)
+    except KeyError as e:
         return "", {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------
 # Engine-specific extractors
 # ---------------------------------------------------------------------------
-def extract_llama(img_path):
+def extract_llama(img_path, source=None):
     """PaddleOCR-VL GGUF — more context detail."""
-    return http_extract(12336, "OCR:", img_path, temp=0, max_tokens=4096)
+    return _engines_call("hybrid", img_path, prompt="OCR:", source=source)
 
 
-def extract_glm(img_path):
+def extract_glm(img_path, source=None):
     """GLM-OCR Q8_0 — primary image PDF engine, markdown + LaTeX."""
-    return http_extract(12335, "Text Recognition:", img_path, temp=0, max_tokens=4096)
+    return _engines_call("glm", img_path, source=source)
+
+
+def extract_dsocr(img_path, source=None):
+    """DeepSeek-OCR Q8_0 — text-first OCR, markdown + layout, fast (~0.8s/page)."""
+    return _engines_call("dsocr", img_path, source=source)
 
 
 def extract_qwen(img_path):
@@ -256,16 +267,18 @@ def _qwen_postprocess(text):
     return text
 
 
-def extract_hybrid(img_path):
+def extract_hybrid(img_path, source=None):
     """PaddleOCR Hybrid — Python layout detection + GGUF VL, structured blocks."""
     try:
         from paddleocr import PaddleOCRVL
-        key = ('llama-cpp-server', 'http://127.0.0.1:12336/v1', '12345')
+        import engines as _eng
+        endpoint, api_key = _eng.get_endpoint("hybrid", source or "local")
+        key = ('llama-cpp-server', endpoint.rstrip('/'), api_key)
         if key not in _vl_instances:
             _vl_instances[key] = PaddleOCRVL(
                 vl_rec_backend='llama-cpp-server',
-                vl_rec_server_url='http://127.0.0.1:12336/v1',
-                vl_rec_api_key='12345',
+                vl_rec_server_url=endpoint.rstrip('/'),
+                vl_rec_api_key=api_key,
                 use_layout_detection=True,
                 use_chart_recognition=False,
                 use_seal_recognition=False,
@@ -481,6 +494,7 @@ def parse_args():
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for OCR (default: 150, lower=faster)")
     p.add_argument("--force-ocr", action="store_true", help="Use OCR even if text detected")
     p.add_argument("--glm", action="store_true", help="GLM-OCR Q8_0 (primary, ~4s/page, LaTeX+formulas)")
+    p.add_argument("--dsocr", action="store_true", help="DeepSeek-OCR Q8_0 (text-first multimodal, ~0.8s/page, markdown)")
     p.add_argument("--hybrid", action="store_true", help="PaddleOCR Hybrid (Python layout + GGUF VL, ~8s/page)")
     p.add_argument("--ocr", action="store_true", help="[DEPRECATED] PP-OCRv5 (use --hybrid instead)")
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
@@ -499,6 +513,7 @@ def parse_args():
     p.add_argument("--layout-device", default="cpu", choices=["cpu", "gpu"], help="Layout detection device (default cpu, GPU 被 OCR 服务占用时用 CPU)")
     p.add_argument("--no-cache", action="store_true", help="Disable extraction cache (default: cache enabled)")
     p.add_argument("--refresh-cache", action="store_true", help="Force re-OCR and refresh cache (ignore existing cache)")
+    p.add_argument("--source", default=None, choices=["local", "cloud"], help="Temporarily switch service source (overrides engine default_source)")
     # --- Deprecated ---
     p.add_argument("--vl", action="store_true", help="[DEPRECATED] PaddleOCRVL native (use --hybrid instead)")
     p.add_argument("--llama", action="store_true", help="[DEPRECATED] PaddleOCR-VL GGUF (use --hybrid instead)")
@@ -514,6 +529,11 @@ def main():
 
     if args.keep_servers:
         atexit.unregister(cleanup)
+        try:
+            import server_manager
+            server_manager.set_keep_servers(True)
+        except ImportError:
+            pass
 
     doc = fitz.open(str(pdf_path))
     total_pages = len(doc)
@@ -595,6 +615,10 @@ def main():
         detection_info["is_image_pdf"] = use_ocr
 
     # Determine engine + ensure servers
+    # 前置校验：--source cloud 只对 hybrid（走 paddle_vl）有效；glm/dsocr 无云源
+    if args.source == "cloud" and (args.glm or args.dsocr):
+        print(f"ERROR: 引擎 'glm|dsocr' 没有 cloud 源（engine_config.yaml 仅配置 local），无法 --source cloud", flush=True)
+        sys.exit(1)
     if args.text_only:
         engine = "text"
     elif args.audit or args.html:
@@ -602,21 +626,24 @@ def main():
         ensure_server("qwen")
     elif args.hybrid:
         engine = "hybrid"
-        ensure_server("llama")  # PaddleOCR GGUF server needed for hybrid VL
+        ensure_server("hybrid")  # PaddleOCR GGUF server needed for hybrid VL (config-driven)
     elif args.vl:
         engine = "vl"
         print("Engine: PaddleOCRVL (native, ~84s/page)", flush=True)
     elif args.glm:
         engine = "glm"
         ensure_server("glm")
+    elif args.dsocr:
+        engine = "dsocr"
+        ensure_server("dsocr")
     elif args.llama:
         engine = "llama"
-        ensure_server("llama")
+        ensure_server("hybrid")  # deprecated alias → hybrid engine
     elif args.ocr:
         engine = "ocr"
     elif use_ocr:
         engine = "hybrid"  # default: PaddleOCR Hybrid (layout + GGUF VL)
-        ensure_server("llama")
+        ensure_server("hybrid")
     else:
         engine = "text"
 
@@ -688,6 +715,9 @@ def main():
             "dpi": args.dpi,
             "min_score": args.layout_min_score,
             "total_time": round(time.time() - t_start, 1),
+            "layout_path": str(layout_path),
+            "total_blocks": sum(len(p["blocks"]) for p in all_pages),
+            "total_crops": crop_index,
             "pages": all_pages,
         }
         with open(str(layout_path), "w", encoding="utf-8") as f:
@@ -785,6 +815,9 @@ def main():
     if engine == "glm":
         extract_fn = extract_glm
         suffix = "md"
+    elif engine == "dsocr":
+        extract_fn = extract_dsocr
+        suffix = "md"
     elif engine == "vl":
         extract_fn = extract_paddle_vl
         suffix = "md"
@@ -792,7 +825,11 @@ def main():
         extract_fn = extract_llama
         suffix = "md"
     elif engine == "hybrid":
-        extract_fn = extract_hybrid
+        if args.source == "cloud":
+            # --source cloud: hybrid 切到云端 PaddleOCR-VL（同款模型 job 模式）
+            extract_fn = lambda img, source=None: _engines_call("paddle_vl", img, source="cloud")
+        else:
+            extract_fn = extract_hybrid
         suffix = "md"
     elif engine == "audit":
         extract_fn = extract_qwen
@@ -800,6 +837,17 @@ def main():
     elif engine == "ocr":
         extract_fn = extract_ocr
         suffix = "md"
+
+    # 解析生效源（供缓存 key 与校验用）
+    effective_source = args.source
+    if engine in ("hybrid", "llama") and args.source == "cloud":
+        effective_source = "cloud"  # hybrid cloud 走 paddle_vl（云）
+    elif engine in ("glm", "dsocr", "hybrid") and args.source is None:
+        try:
+            import engines as _eng
+            _, effective_source = _eng.get_engine(engine, None)
+        except KeyError:
+            effective_source = "local"
 
     out_folder, out_path, _unused_imgs = make_output_folder(pdf_path.stem, suffix, args.output_dir, page_suffix)
     pages_data = []
@@ -836,7 +884,7 @@ def main():
                     dt = time.time() - t0
                 else:
                     page_num = batch[0]
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_d{args.dpi}"
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}"
                     cached = cache_get(cache_dir, key) if cache_dir else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}
@@ -845,7 +893,7 @@ def main():
                         text, stats = "", {}
                         for attempt in range(3):
                             t0 = time.time()
-                            text, stats = extract_fn(tmp_paths[0])
+                            text, stats = extract_fn(tmp_paths[0], source=args.source)
                             dt = time.time() - t0
                             if text:
                                 break
