@@ -27,6 +27,19 @@ def _detect_gpu():
         return False
 
 
+def _query_free_vram_mib():
+    """查询 GPU 空闲显存（MiB）。无 GPU/查询失败返回 None。"""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, timeout=10)
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.decode(errors="ignore").strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 def _resolve_device(cfg, name):
     """Resolve effective device with GPU fallback. Returns (device, warned)."""
     device = cfg.get("defaults", {}).get("device", "gpu")
@@ -87,6 +100,18 @@ def start(name, server_cfg):
                 f"  → 请按 docs/SETUP_GUIDE.md 下载模型，并在 engine_config.local.yaml 填正确路径",
                 flush=True)
             raise FileNotFoundError(fpath)
+
+    # 启动前显存检查（SKILL.md 规则：空闲 >3GB 才能安全启动 OCR 引擎）
+    _vram_required = int(server_cfg.get("vram_required_mib", 3000))
+    _vram_free = _query_free_vram_mib()
+    if _vram_free is not None and _vram_free < _vram_required:
+        print(
+            f"[server_manager] 引擎 '{name}' 未启动：GPU 空闲显存 {_vram_free} MiB < 需要 {_vram_required} MiB\n"
+            f"  → 按 SKILL.md 规则，启动前须空闲 >3GB。请关闭占用显存的程序"
+            f"（ComfyUI/浏览器/视频等），再重试。\n"
+            f"    查看占用: nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader",
+            flush=True)
+        raise RuntimeError(f"[server_manager] {name} 启动前显存检查未通过（空闲 {_vram_free} MiB < {_vram_required} MiB）")
 
     args = [exe_path, "-m", server_cfg["model"], "--mmproj", server_cfg["mmproj"],
             "--port", str(port := server_cfg.get("port", 0)), "--host", "127.0.0.1"]
