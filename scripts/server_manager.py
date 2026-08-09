@@ -112,6 +112,31 @@ def start(name, server_cfg):
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=_err_file)
     _started_servers.append((name, proc, _err_file.name))
 
+    def _tail_error_log():
+        """读取引擎 stderr 日志尾部（诊断启动失败）。"""
+        try:
+            with open(_err_file.name, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return "".join(lines[-15:])
+        except Exception:
+            return ""
+
+    def _vram_hint():
+        """检测显存是否不足，给出行动建议。"""
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, timeout=10)
+            free_mib = int(r.stdout.decode(errors="ignore").strip().splitlines()[0])
+            if free_mib < 4000:
+                return (
+                    f"\n  ⚠ 当前 GPU 空闲显存仅 {free_mib} MiB（OCR 引擎需 ≥3GB）。\n"
+                    f"  → 请先关闭占用显存的程序（ComfyUI/浏览器/视频等），或运行:\n"
+                    f"    nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader")
+        except Exception:
+            pass
+        return ""
+
     # 等待就绪：先等端口，再等 /health（模型加载完成）——避免冷启动前几页失败
     import requests as _req
     port_open = False
@@ -120,7 +145,9 @@ def start(name, server_cfg):
             port_open = True
             break
         if proc.poll() is not None:
-            raise RuntimeError(f"[server_manager] {name} 启动失败 (exit {proc.returncode})")
+            raise RuntimeError(
+                f"[server_manager] {name} 启动失败 (exit {proc.returncode})\n"
+                f"  日志尾部:\n{_tail_error_log()}{_vram_hint()}")
         time.sleep(0.5)
     if not port_open:
         raise RuntimeError(f"[server_manager] {name} 启动超时 (port {port})")
@@ -135,16 +162,9 @@ def start(name, server_cfg):
             pass
         if proc.poll() is not None:
             # 启动失败：打印 stderr 尾部帮助诊断
-            tail = ""
-            try:
-                with open(_err_file.name, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()
-                tail = "".join(lines[-15:])
-            except Exception:
-                pass
             raise RuntimeError(
                 f"[server_manager] {name} 启动失败 (exit {proc.returncode})\n"
-                f"  日志尾部:\n{tail}")
+                f"  日志尾部:\n{_tail_error_log()}{_vram_hint()}")
         time.sleep(0.5)
     raise RuntimeError(f"[server_manager] {name} /health 超时 (port {port})")
 
