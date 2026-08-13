@@ -5,6 +5,7 @@ __pycache__/
 
 # 本机私有配置（不提交）
 engine_config.local.yaml
+engine_config.yaml
 
 # 本地测试产物（目录；bench_*.py 脚本保留提交）
 tests/*_output/
