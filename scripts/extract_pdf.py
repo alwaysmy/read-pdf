@@ -1,6 +1,6 @@
 """Extract text from PDF — auto-manages llama servers, outputs txt/md/json."""
 import sys, os, pathlib, argparse, tempfile, base64
-import json, time, socket, subprocess, atexit, signal
+import json, time
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -8,168 +8,19 @@ if sys.platform == "win32":
 
 import fitz  # PyMuPDF
 
-# ---------------------------------------------------------------------------
-# Server auto-management
-# ---------------------------------------------------------------------------
-LLAMA_DIR = r"D:\llm\llama-b9830-bin-win-cuda-13.3-x64"
-LLAMA_SERVER = os.path.join(LLAMA_DIR, "llama-server.exe")
 
-# legacy SERVERS（仅供 qwen audit 引擎与 manage_servers.py 使用）
-# 注意: hybrid/glm/dsocr 的服务配置已由 engine_config.yaml 管理（server_manager.py），
-#       此处保留同键条目仅为 manage_servers.py 兼容；改引擎配置请改 engine_config.local.yaml
-SERVERS = {
-    "llama": {  # PaddleOCR-VL GGUF — alternative, more context detail
-        "port": 12336,
-        "args": [
-            LLAMA_SERVER,
-            "-m", r"D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF.gguf",
-            "--mmproj", r"D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
-            "--port", "12336", "--host", "127.0.0.1",
-            "-ngl", "100", "--no-mmap", "--no-warmup",
-            "-c", "32768", "-n", "32768", "-t", "8", "-np", "1",
-            "--api-key", "12345",
-        ],
-    },
-    "glm": {  # GLM-OCR Q8_0 — primary image PDF engine
-        "port": 12335,
-        "args": [
-            LLAMA_SERVER,
-            "-m", r"D:\llm\ggml-org\GLM-OCR-GGUF\GLM-OCR-Q8_0.gguf",
-            "--mmproj", r"D:\llm\ggml-org\GLM-OCR-GGUF\mmproj-GLM-OCR-Q8_0.gguf",
-            "--port", "12335", "--host", "127.0.0.1",
-            "-ngl", "100", "--no-mmap", "--no-warmup",
-            "-c", "16384", "-n", "16384", "-t", "8", "-np", "1",
-            "--api-key", "12345",
-        ],
-    },
-    "dsocr": {  # DeepSeek-OCR Q8_0 — text-first multimodal OCR (P2)
-        "port": 12337,
-        "args": [
-            LLAMA_SERVER,
-            "-m", r"D:\llm\ggml-org\DeepSeek-OCR\DeepSeek-OCR-Q8_0.gguf",
-            "--mmproj", r"D:\llm\ggml-org\DeepSeek-OCR\mmproj-DeepSeek-OCR-Q8_0.gguf",
-            "--port", "12337", "--host", "127.0.0.1",
-            "-ngl", "100", "--no-mmap", "--no-warmup",
-            "-c", "8192", "-n", "8192", "-t", "8", "-np", "1",
-            "--api-key", "12345",
-        ],
-    },
-    "qwen": {  # Qwen3.6-35B-A3B — knowledge audit
-        "port": 12334,
-        "args": [
-            LLAMA_SERVER,
-            "-m", r"D:\llm\HauhauCS\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_NL.gguf",
-            "--mmproj", r"D:\llm\HauhauCS\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf",
-            "--port", "12334", "--host", "127.0.0.1",
-            "-ngl", "100", "-ncmoe", "32", "--no-mmap", "--no-warmup",
-            "-fa", "on", "-fit", "on",
-            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
-            "--no-context-shift",
-            "--spec-type", "ngram-mod", "--spec-ngram-mod-n-max", "16", "--spec-ngram-mod-n-min", "8",
-            "-c", "131072", "-n", "131072", "-t", "8", "-np", "1",
-            "--api-key", "12345",
-        ],
-        "env": {"LLAMA_CHAT_TEMPLATE_KWARGS": '{"enable_thinking":false}'},
-    },
-}
-
-_started_servers = []
 _vl_instances = {}
 
 
-def is_port_open(port, host="127.0.0.1"):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.5)
-    try:
-        s.connect((host, port))
-        s.close()
-        return True
-    except Exception:
-        return False
-
-
-def start_server(name):
-    cfg = SERVERS[name]
-    if is_port_open(cfg["port"]):
-        print(f"[server] {name} already running on port {cfg['port']}", flush=True)
-        return
-    # Check VRAM before starting
-    try:
-        import subprocess as _sp
-        out = _sp.check_output(
-            "nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits",
-            shell=True, text=True
-        )
-        free_mb = int(out.strip())
-        if free_mb < 3072:
-            print(f"[server] WARNING: only {free_mb} MiB VRAM free (need >3GB). Server may fail.", flush=True)
-    except Exception:
-        pass
-    print(f"[server] starting {name} on port {cfg['port']}...", flush=True)
-    proc_env = os.environ.copy()
-    if cfg.get("env"):
-        proc_env.update(cfg["env"])
-    proc = subprocess.Popen(
-        cfg["args"],
-        env=proc_env,
-        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
-    )
-    _started_servers.append((name, proc))
-    # Wait for HTTP server to be fully ready (not just port open)
-    for _this in range(60):
-        if is_port_open(cfg["port"]):
-            try:
-                import requests
-                r = requests.get(f"http://127.0.0.1:{cfg['port']}/health", timeout=2)
-                if r.status_code == 200:
-                    print(f"[server] {name} ready", flush=True)
-                    return
-            except Exception:
-                pass
-        time.sleep(2)
-    print(f"[server] WARNING: {name} health check failed after 120s", flush=True)
-
-
 def ensure_server(name):
-    """Ensure server running. Config-managed engines → server_manager; legacy (qwen) → SERVERS."""
-    try:
-        from engines import get_engine
-        engine, src = get_engine(name)
-        if src == "local":
-            import server_manager
-            server_manager.ensure(name, engine["sources"]["local"].get("server"))
-            return
-        # cloud source: no local server needed
-        return
-    except KeyError:
-        pass
-    # Legacy engine (qwen etc.) — fall back to SERVERS dict
-    if not is_port_open(SERVERS[name]["port"]):
-        start_server(name)
+    """Ensure local server for engine is running (config-driven via engine_config.yaml)."""
+    from engines import get_engine
+    engine, src = get_engine(name)
+    if src != "local":
+        return  # 云源无需本地服务
+    import server_manager
+    server_manager.ensure(name, engine["sources"]["local"].get("server"))
 
-
-def stop_all_servers():
-    for name, proc in _started_servers:
-        print(f"[server] stopping {name}...", flush=True)
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-    _started_servers.clear()
-
-
-def cleanup():
-    stop_all_servers()
-    _vl_instances.clear()
-
-
-atexit.register(cleanup)
-
-# ---------------------------------------------------------------------------
 # HTTP extraction backends
 def _engines_call(name, img_path, prompt=None, source=None):
     """Route engine call through engines.py (config-driven local/cloud)."""
@@ -224,11 +75,13 @@ def _qwen_raw(img_paths, prompt=None):
             b2 = base64.b64encode(f.read()).decode()
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b2}"}})
     content.append({"type": "text", "text": prompt})
+    import engines as _eng
+    endpoint, api_key = _eng.get_endpoint("qwen")
     import requests
     try:
         resp = requests.post(
-            "http://127.0.0.1:12334/v1/chat/completions",
-            headers={"Authorization": "Bearer 12345"},
+            endpoint.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
             json={"messages": [{"role": "user", "content": content}], "temperature": 0, "max_tokens": 8192},
             timeout=300,
         )
@@ -528,7 +381,6 @@ def main():
         sys.exit(1)
 
     if args.keep_servers:
-        atexit.unregister(cleanup)
         try:
             import server_manager
             server_manager.set_keep_servers(True)

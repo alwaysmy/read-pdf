@@ -98,9 +98,17 @@ engines:
 
 1. 注册/登录 AI Studio：https://aistudio.baidu.com
 2. 获取访问 token（控制台 → 密钥管理 / 或官方文档）
-3. 设置环境变量（不写进仓库）：
-   ```powershell
-   $env:PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN = "你的token"
+3. 把 token 写进本机私有配置 engine_config.local.yaml（gitignore，不进仓库）：
+   ```yaml
+   engines:
+     hybrid:
+       sources:
+         cloud:
+           api_key: "你的token"
+     paddle_vl:
+       sources:
+         cloud:
+           api_key: "你的token"
    ```
 4. 使用：`python scripts/extract_pdf.py book.pdf --source cloud`
    （或改 `engine_config.yaml` 里 hybrid 的 `default_source: cloud` 永久默认）
@@ -110,7 +118,7 @@ engines:
 ## 六、验证安装
 
 ```powershell
-# 1. 引擎配置能加载（应列出 4 个引擎）
+# 1. 引擎配置能加载（应列出 5 个引擎）
 python -c "import sys; sys.path.insert(0,'scripts'); import engines; print(list(engines.load_config()['engines']))"
 
 # 2. 文本 PDF（不需要任何模型/GPU）
@@ -132,5 +140,5 @@ python scripts/extract_pdf.py 你的扫描PDF.pdf --layout --pages 1-3
 | `llama-server.exe not found` | `defaults.llama_dir` 指向 llama.cpp 解压目录 |
 | `引擎 'x' 不在 engine_config.yaml` | 版本太旧，重新拉取 |
 | 无 GPU 却配了 gpu | 自动告警回退 cpu；想禁用回退设 `gpu_fallback: false` |
-| `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN` 未设置 | 用了 `--source cloud` 但没设环境变量 |
+| 云源 401 / api_key 未配置 | 在 `engine_config.local.yaml` 填 hybrid / paddle_vl 的 cloud api_key |
 | huggingface 下载慢/失败 | 用 hf-mirror.com 镜像 |

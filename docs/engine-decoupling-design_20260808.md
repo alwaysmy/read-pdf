@@ -1,3 +1,5 @@
+> **注（2026-08-13）**：本文中的 `${ENV_VAR}` 环境变量注入方案已废弃——云 token 与端口现统一走 `engine_config.yaml`（真实值在 gitignore 的 `engine_config.local.yaml`），代码不再读环境变量。
+
 # read-pdf 引擎解耦设计文档（v1）
 
 - 日期：2026-08-08

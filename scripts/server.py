@@ -2,7 +2,7 @@
 
 架构：Flask API → subprocess 调用 extract_pdf.py（零侵入复用 CLI）。
 端点：POST /extract, POST /layout, GET /engines, GET/POST /config, GET /health
-默认 http://127.0.0.1:8123（仅本机）；可选 READPDF_API_KEY 做 Bearer 认证。
+默认 http://127.0.0.1:8123（host/port 在 engine_config.yaml 的 server 段配置，仅本机）；可选 READPDF_API_KEY 做 Bearer 认证。
 """
 import json
 import os
@@ -15,8 +15,18 @@ from flask import Flask, jsonify, request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "extract_pdf.py"
-HOST = os.environ.get("READPDF_HOST", "127.0.0.1")
-PORT = int(os.environ.get("READPDF_PORT", "8123"))
+def _server_defaults():
+    """host/port 来自 engine_config.yaml 的 server 段（缺省时用内置默认值）。"""
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        from engines import load_config
+        srv = load_config().get("server") or {}
+        return srv.get("host", "127.0.0.1"), int(srv.get("port", 8123))
+    except Exception:
+        return "127.0.0.1", 8123
+
+
+HOST, PORT = _server_defaults()
 
 
 def _get_api_key():

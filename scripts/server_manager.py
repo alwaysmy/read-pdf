@@ -134,7 +134,10 @@ def start(name, server_cfg):
     print(f"[server_manager] 启动 {name} (port {port}, {device})...", flush=True)
     import tempfile as _tf
     _err_file = _tf.NamedTemporaryFile(prefix=f"llama_{name}_", suffix=".log", delete=False)
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=_err_file)
+    proc_env = os.environ.copy()
+    if server_cfg.get("env"):
+        proc_env.update(server_cfg["env"])
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=_err_file, env=proc_env)
     _started_servers.append((name, proc, _err_file.name))
 
     def _tail_error_log():

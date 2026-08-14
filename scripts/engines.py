@@ -18,20 +18,6 @@ _LOCAL_CONFIG_PATH = _REPO_ROOT / "engine_config.local.yaml"
 _cache = None
 
 
-def _expand_env(value):
-    """Expand ${ENV_VAR} placeholders from environment.
-    未定义的变量 → 抛 ValueError（可诊断），而非返回异常 dict。"""
-    if isinstance(value, str) and "${" in value:
-        import re
-        for m in re.finditer(r"\$\{([^}]+)\}", value):
-            var = m.group(1)
-            if var not in os.environ:
-                raise ValueError(f"环境变量 {var} 未设置（可设到 engine_config.local.yaml 或系统环境变量）")
-        for k in os.environ:
-            value = value.replace(f"${{{k}}}", os.environ[k])
-    return value
-
-
 def _merge_dict(base, override):
     """Deep merge: override wins."""
     out = dict(base)
@@ -52,6 +38,10 @@ def load_config(force=False):
         import yaml
     except ImportError:
         raise RuntimeError("需要 PyYAML: pip install pyyaml")
+    if not _CONFIG_PATH.exists():
+        raise RuntimeError(
+            "找不到 " + str(_CONFIG_PATH) + "。请恢复仓库文件（git checkout -- engine_config.yaml），"
+            "或参考 docs/SETUP_GUIDE.md 初始化；本机私有配置写 engine_config.local.yaml（gitignore）。")
     cfg = yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
     if _LOCAL_CONFIG_PATH.exists():
         local = yaml.safe_load(_LOCAL_CONFIG_PATH.read_text(encoding="utf-8")) or {}
@@ -76,8 +66,8 @@ def get_endpoint(name, source=None):
     """Return (endpoint, api_key) for the effective source."""
     engine, src = get_engine(name, source)
     src_cfg = engine["sources"][src]
-    endpoint = _expand_env(src_cfg.get("endpoint", ""))
-    api_key = _expand_env(src_cfg.get("api_key", ""))
+    endpoint = src_cfg.get("endpoint", "")
+    api_key = src_cfg.get("api_key", "")
     return endpoint, api_key
 
 
@@ -94,8 +84,8 @@ def ensure_local_server(name, server_manager):
 def call_local(engine, src_cfg, img_path, prompt, temp=0, max_tokens=8192):
     """POST OpenAI-compatible chat/completions to local endpoint."""
     import requests
-    endpoint = _expand_env(src_cfg.get("endpoint"))
-    api_key = _expand_env(src_cfg.get("api_key", ""))
+    endpoint = src_cfg.get("endpoint")
+    api_key = src_cfg.get("api_key", "")
     with open(img_path, "rb") as f:
         img_b64 = base64.b64encode(f.read()).decode()
     message_order = engine.get("message_order", "image-first")
@@ -134,11 +124,8 @@ def call_local(engine, src_cfg, img_path, prompt, temp=0, max_tokens=8192):
 def call_cloud_aistudio(engine, src_cfg, file_path, max_wait_s=300):
     """PaddleOCR AI Studio job 模式：提交 → 轮询 → 拉 JSONL markdown."""
     import requests
-    try:
-        endpoint = _expand_env(src_cfg.get("endpoint"))
-        api_key = _expand_env(src_cfg.get("api_key"))
-    except ValueError as e:
-        return "", {"error": str(e)}
+    endpoint = src_cfg.get("endpoint")
+    api_key = src_cfg.get("api_key", "")
     model = src_cfg.get("model", "PaddleOCR-VL-1.6")
     optional = src_cfg.get("optional_payload") or {}
     headers = {"Authorization": f"bearer {api_key}"}

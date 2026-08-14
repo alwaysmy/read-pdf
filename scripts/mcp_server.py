@@ -2,10 +2,10 @@
 
 用法（需先启动本体服务）:
   python scripts/server.py            # 启动本体
-  uvx --from readpdf-mcp readpdf_mcp  # 或: python scripts/mcp_server.py
+  python scripts/mcp_server.py        # MCP server
 
 环境变量:
-  READPDF_SERVER_URL  (默认 http://127.0.0.1:8123)
+  READPDF_SERVER_URL  (可选覆盖；默认读 engine_config.yaml 的 server 段)
   READPDF_API_KEY     (可选，本体设置了 Bearer key 时填)
 
 MCP 工具:
@@ -16,10 +16,26 @@ MCP 工具:
 import json
 import os
 import pathlib
+import sys
 
 import requests
 
-SERVER_URL = os.environ.get("READPDF_SERVER_URL", "http://127.0.0.1:8123").rstrip("/")
+
+def _server_url():
+    """优先 READPDF_SERVER_URL 环境变量；否则读 engine_config.yaml 的 server 段。"""
+    env_url = os.environ.get("READPDF_SERVER_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from engines import load_config
+        srv = load_config().get("server") or {}
+        return f"http://{srv.get('host', '127.0.0.1')}:{int(srv.get('port', 8123))}"
+    except Exception:
+        return "http://127.0.0.1:8123"
+
+
+SERVER_URL = _server_url()
 
 
 def _api_key():

@@ -29,12 +29,11 @@ python scripts/extract_pdf.py scan.pdf --pages 1-10
 read-pdf 可独立运行为 HTTP 服务，供 MCP 客户端 / 插件调用（详见 `docs/server-design_20260808.md`）：
 
 ```powershell
-# 1. 启动本体服务（默认 http://127.0.0.1:8123）
+# 1. 启动本体服务（默认 http://127.0.0.1:8123，端口见 engine_config.yaml 的 server 段）
 python scripts/server.py
 
 # 2. 以 MCP server 接入任意 MCP 客户端
-uvx --from readpdf-mcp readpdf_mcp
-# 或本地: python scripts/mcp_server.py
+python scripts/mcp_server.py
 ```
 
 MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`。

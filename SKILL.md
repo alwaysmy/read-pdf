@@ -173,7 +173,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 
 **抽取缓存（默认开启）。** 每页 OCR 结果缓存到 `{name}_output/.cache/`（key 含 PDF 名/页码/引擎/源/DPI，自动失效），二次处理直接读缓存免 OCR（实测 total_time 0.0s）。`--no-cache` 禁用，`--refresh-cache` 强制重跑。
 
-**服务模式（本体 HTTP + MCP）。** 可独立运行：`python scripts/server.py`（默认 127.0.0.1:8123，首次启动自动生成 Bearer key 存 `~/.readpdf/key`）→ MCP 客户端经 `mcp_server.py` 接入，工具 `extract_pdf`/`layout_pdf`/`list_engines`。详见 `docs/server-design_20260808.md`。配置（引擎/双源/路由）集中在 `engine_config.yaml`，本机覆盖用 `engine_config.local.yaml`。
+**服务模式（本体 HTTP + MCP）。** 可独立运行：`python scripts/server.py`（host/port 在 `engine_config.yaml` 的 `server` 段配置，默认 8123；首次启动自动生成 Bearer key 存 `~/.readpdf/key`）→ MCP 客户端经 `mcp_server.py` 接入，工具 `extract_pdf`/`layout_pdf`/`list_engines`。详见 `docs/server-design_20260808.md`。配置（引擎/双源/路由/端口）集中在 `engine_config.yaml`，本机覆盖用 `engine_config.local.yaml`。
 
 ### 默认流程
 
@@ -199,43 +199,19 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 ## 服务启动
 
 > 引擎服务由脚本自动管理（`server_manager.py` 按 `engine_config.yaml` 启停，冷启动等 /health 就绪）。
-> 以下手动命令仅作参考/排障（路径来自本机配置，其他机器以 `engine_config.local.yaml` 为准）。
+> 手动排障参数已统一收敛到 `engine_config.yaml` 各引擎的 `sources.local.server` 段（exe/model/mmproj/port/args/env）；本机覆盖改 `engine_config.local.yaml`。`python manage_servers.py status` 可查各引擎端口状态。
 
-### GLM-OCR Q8_0（备用引擎，端口 12335）
+### GLM-OCR Q8_0（备用引擎）
 
-```powershell
-d:\llm\llama-b9830-bin-win-cuda-13.3-x64\llama-server.exe `
-  -m D:\llm\ggml-org\GLM-OCR-GGUF\GLM-OCR-Q8_0.gguf `
-  --mmproj D:\llm\ggml-org\GLM-OCR-GGUF\mmproj-GLM-OCR-Q8_0.gguf `
-  -ngl 100 --no-mmap --no-warmup `
-  -c 16384 -n 16384 -t 8 -np 1 `
-  --port 12335 --api-key 12345
-```
+参数见 `engine_config.yaml` → `engines.glm.sources.local.server`（exe/model/mmproj/port/args）。
 
-### PaddleOCR-VL GGUF（Hybrid 管线默认 VL 后端，端口 12336）
+### PaddleOCR-VL GGUF（Hybrid 管线默认 VL 后端）
 
-```powershell
-d:\llm\llama-b9830-bin-win-cuda-13.3-x64\llama-server.exe `
-  -m D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF.gguf `
-  --mmproj D:\llm\PaddlePaddle\PaddleOCR-VL-1.6-GGUF\PaddleOCR-VL-1.6-GGUF-mmproj.gguf `
-  -ngl 100 --no-mmap --no-warmup `
-  -c 32768 -n 32768 -t 8 -np 1 `
-  --port 12336 --api-key 12345
-```
+参数见 `engine_config.yaml` → `engines.hybrid.sources.local.server`（exe/model/mmproj/port/args）。
 
-### Qwen 35B（知识审校，端口 12334）
+### Qwen 35B（知识审校）
 
-```powershell
-$env:LLAMA_CHAT_TEMPLATE_KWARGS = '{"enable_thinking":false}'
-d:\llm\llama-b9830-bin-win-cuda-13.3-x64\llama-server.exe `
-  -m D:\llm\HauhauCS\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_NL.gguf `
-  --mmproj D:\llm\HauhauCS\Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf `
-  -ngl 100 -ncmoe 32 --no-mmap --no-warmup `
-  -fa on -fit on --cache-type-k q8_0 --cache-type-v q8_0 --no-context-shift `
-  --spec-type ngram-mod --spec-ngram-mod-n-max 16 --spec-ngram-mod-n-min 8 `
-  -c 131072 -n 131072 -t 8 -np 1 `
-  --port 12334 --api-key 12345
-```
+参数见 `engine_config.yaml` → `engines.qwen.sources.local.server`（含 `env` 段的 LLAMA_CHAT_TEMPLATE_KWARGS）。
 
 **HTML 输出保留原始排版。** `--audit`（或等价的 `--html`）输出 Qwen 的 HTML，保留 `<div>` `<table>` 结构，适合复杂排版。默认逐页发。加 `--batch` 把 `--pages` 选中页一次性发给 Qwen 做跨页理解。`--pages` 支持逗号分隔（`5-10,20-25`）。多段跨页用 `--keep-servers` 分多次调用。
 
