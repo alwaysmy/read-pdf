@@ -49,8 +49,8 @@ def extract_dsocr(img_path, source=None):
     return _engines_call("dsocr", img_path, source=source)
 
 
-def extract_qwen(img_path):
-    """Qwen 35B — knowledge audit, HTML output (single page)."""
+def extract_qwen(img_path, source=None):
+    """Qwen 35B — knowledge audit, HTML output (single page). source 参数仅为兼容统一调用约定。"""
     text, stats = _qwen_raw([img_path])
     return _qwen_postprocess(text), stats
 
@@ -302,11 +302,11 @@ def make_output_folder(pdf_name, suffix, output_dir=None, page_suffix=""):
     """
     base = pathlib.Path(output_dir) if output_dir else pathlib.Path.cwd()
     folder = base / f"{pdf_name}_output"
-    folder.mkdir(exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
     imgs = None
     if suffix == "md":
         imgs = folder / "imgs"
-        imgs.mkdir(exist_ok=True)
+        imgs.mkdir(parents=True, exist_ok=True)
     name = f"{pdf_name}_{page_suffix}" if page_suffix else pdf_name
     out_path = folder / f"{name}.{suffix}"
     return folder, out_path, imgs

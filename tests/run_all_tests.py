@@ -6,12 +6,16 @@ import subprocess
 import sys
 import time
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = pathlib.Path(__file__).resolve().parent
 TAG = time.strftime("%Y%m%d_%H%M%S")
 
 # (脚本名, 描述, 是否需要本体服务)
 SUITES = [
-    ("unit_engines.py", "engines 单元（配置/双源/ENV/local合并）", False),
+    ("unit_engines.py", "engines 单元（配置/双源/local合并）", False),
     ("unit_server_manager.py", "server_manager 单元（GPU/回退/云跳过）", False),
     ("test_friendly_hint.py", "首次运行友好提示", False),
     ("test_mcp_tools.py", "MCP 工具函数（需本体服务）", True),

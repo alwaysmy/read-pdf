@@ -229,7 +229,7 @@ def config():
         # 脱敏返回：local.yaml 里可能含真实 token，api_key 掩码
         def _mask(text):
             import re
-            return re.sub(r"(api_key\s*:\s*[\"']?)([^\"'\s}]+)", lambda m: m.group(1) + "***", text or "")
+            return re.sub(r"(api_key\s*:\s*[\"']?)([^\"'\s]+)", lambda m: m.group(1) + "***", text or "")
         return jsonify({
             "main_config": _mask(main_path.read_text(encoding="utf-8")) if main_path.exists() else "",
             "local_config": _mask(local_path.read_text(encoding="utf-8")) if local_path.exists() else "",

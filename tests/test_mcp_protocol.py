@@ -6,6 +6,10 @@ import pathlib
 import subprocess
 import sys
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 MCP = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "mcp_server.py"
 
 

@@ -1,8 +1,12 @@
-"""engines.py 单元验证：配置加载/双源解析/ENV 展开/local 合并.
+"""engines.py 单元验证：配置加载/双源解析/local 合并.
 用法: python tests/unit_engines.py
 """
 import pathlib
 import sys
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -27,31 +31,31 @@ def main():
     assert "12335" in ep, f"glm 端点错误: {ep}"
     print(f"3. glm 本地端点 OK: {ep}")
 
-    # 4. ENV 展开
+    # 4. 配置直读（环境变量机制已移除：api_key 只来自 engine_config.yaml / local.yaml）
     import os
     os.environ["PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN"] = "test-token"
     ep_c, key_c = engines.get_endpoint("paddle_vl", "cloud")
-    assert key_c == "test-token", f"ENV 展开失败: {key_c}"
-    print("4. ${ENV} 展开 OK: paddle_vl cloud api_key 正确")
+    assert key_c and key_c != "test-token", f"cloud api_key 应来自配置而非环境变量: {key_c}"
+    print("4. 配置直读 OK: paddle_vl cloud api_key 来自配置（环境变量已废弃，不再展开）")
 
-    # 5. local 合并（写临时 local 配置验证）
-    import tempfile
+    # 5. local 合并（独立临时文件验证，不触碰真实 engine_config.local.yaml）
     root = pathlib.Path(__file__).resolve().parents[1]
     backup = engines._LOCAL_CONFIG_PATH
+    tmp_local = root / "engine_config.local.test.yaml"
     try:
-        engines._LOCAL_CONFIG_PATH = root / "engine_config.local.yaml"
-        engines._LOCAL_CONFIG_PATH.write_text(
+        engines._LOCAL_CONFIG_PATH = tmp_local
+        tmp_local.write_text(
             "engines:\n  glm:\n    sources:\n      local:\n        server:\n          port: 19999\n",
             encoding="utf-8")
         engines._cache = None
         cfg2 = engines.load_config(force=True)
         assert cfg2["engines"]["glm"]["sources"]["local"]["server"]["port"] == 19999, "local 合并失败"
-        print("5. local 覆盖合并 OK: glm 端口被 local.yaml 覆盖为 19999")
+        print("5. local 覆盖合并 OK: glm 端口被 local 覆盖为 19999")
     finally:
         engines._LOCAL_CONFIG_PATH = backup
         engines._cache = None
-        if (root / "engine_config.local.yaml").exists():
-            (root / "engine_config.local.yaml").unlink()
+        if tmp_local.exists():
+            tmp_local.unlink()
 
     # 6. 未知引擎报错
     try:
