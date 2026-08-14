@@ -727,17 +727,24 @@ def main():
                 # Extract batch (with cache if enabled)
                 use_cache = not args.no_cache and not args.refresh_cache
                 cache_dir = None
-                if use_cache and engine != "audit":
+                # --refresh-cache: 跳过读取但仍写回新结果（刷新缓存语义）
+                if not args.no_cache and engine != "audit":
                     cache_dir = out_folder / ".cache"
                 if len(batch) > 1:
-                    # Multi-page (audit) — no cache
-                    t0 = time.time()
-                    text, stats = extract_qwen_multi(tmp_paths)
-                    dt = time.time() - t0
+                    # Multi-page (audit) — no cache; 空输出重试（与单页一致）
+                    text, stats = "", {}
+                    for attempt in range(3):
+                        t0 = time.time()
+                        text, stats = extract_qwen_multi(tmp_paths)
+                        dt = time.time() - t0
+                        if text:
+                            break
+                        if attempt < 2:
+                            time.sleep(2)
                 else:
                     page_num = batch[0]
                     key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}"
-                    cached = cache_get(cache_dir, key) if cache_dir else None
+                    cached = cache_get(cache_dir, key) if (use_cache and cache_dir) else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}
                         dt = 0.0
