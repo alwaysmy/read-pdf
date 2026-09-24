@@ -69,22 +69,32 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | PaddleOCR Hybrid | ~2.5s | ✅ 最好 | 图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
-| ov（本地轻量） | GPU 整页 A4 ~2s；CPU ~35s | ⚠️ 一般（纯文本行） | 无 GPU/llama-server 场景 |
+| ov（本地轻量） | 见下（后端自动择优） | ⚠️ 一般（纯文本行） | 无 GPU/llama-server 场景 |
 | 云 PaddleOCR-VL-1.6 | ~9.3s | ✅ 与本地同 | 无 GPU 兜底 |
 
 > **速度口径**：除 ov 行外为历史实测（小图 / 单页量级），本轮未复测。
 > ov 行为 2026-09-24 本机实测 —— 小图 7 张（320×120 ~ 780×560）、整页 A4
-> （150dpi、约 1275×1650、约 117 个识别行）：
+> （150dpi、约 1275×1650、约 117 个识别行）。
 
-| ov 设备 | 小图 | 整页 A4 |
-|---|---|---|
-| CPU（`paddlepaddle`，mkldnn 不可用） | 0.61s | ~35s |
-| GPU（`paddlepaddle-gpu`） | 0.07s | **~2s** |
+### ov 后端自动择优
+
+`--ov` 有三种后端，由 `defaults.ocr_backend` 控制（默认 `auto`，按 `gpu > openvino > cpu` 择优）：
+
+| 后端 | 整页 A4 | 小图 | 识别质量 | 前置条件 |
+|---|---|---|---|---|
+| `gpu`（paddlepaddle-gpu） | **~2.0s** | 0.07s | ✅ 最佳（conf 0.98/0.75） | CUDA 版 paddlepaddle + 可用 GPU |
+| `openvino`（CPU） | ~4.3s | 0.11s | ⚠️ 略低（conf 0.82/0.50） | `defaults.ocr_ov_dir` 指向含 `ppocr_openvino.py` 与 PP-OCRv6 ONNX 的目录，且装有 `openvino` |
+| `cpu`（paddlepaddle） | ~35s | 0.61s | ✅ 最佳 | 无（兜底） |
+
+`auto` 的选择顺序：`ocr_device: gpu` 且 paddle 有 CUDA 设备 → `gpu`；否则 OpenVINO 资产可用 → `openvino`；再否则 `cpu`。
+可用 `ocr_backend: gpu|openvino|cpu` 强制指定。加载失败会逐级降级并在日志打印 `[ov] 后端: <name>`。
+
+**质量差异须知**：OpenVINO 后端快，但识别质量不与非 OpenVINO 后端完全等价 ——
+同一密排 A4 页对比：106 行 vs 117 行，存在约 5% 字符级差异
+（如 `FREE`→`AREE`、`Available`→`Availabe`、大小写、`•` 项目符号丢失）。
+它的 `rec` 置信度整体偏低（0.82 vs 0.98），是预处理差异所致，**不可跨后端直接比较**。
+对质量敏感的场景请用 `ocr_backend: gpu`/`cpu`，或改用 `--hybrid`/`--glm`。
 
 > 整页耗时随**识别行数**增长，与渲染 dpi 基本无关（CPU 下 dpi 100 与 150 同为 ~23s）。
 > `enable_mkldnn` 在 Paddle 3.x + PP-OCRv6 上不可用
-> （`NotImplementedError: ConvertPirAttribute2RuntimeAttribute`），这是 CPU 端慢的根因；
-> 换 GPU 是主要提速途径（约 17x，识别结果一致）。
-> 设备由 `engine_config.yaml` 的 `defaults.ocr_device` 决定（默认 `cpu`）；
-> 用 `gpu` 需装 CUDA 版 paddlepaddle（Paddle 官方索引 `paddlepaddle-gpu`），
-> 并在 `engine_config.local.yaml` 覆盖。环境不支持时会告警并回退 `cpu`。
+> （`NotImplementedError: ConvertPirAttribute2RuntimeAttribute`），这是 paddle CPU 端慢的根因。

@@ -182,60 +182,152 @@ def extract_paddle_vl(img_path):
 _OV = {}
 
 
-def _ov_device():
-    """--ov 的推理设备：engine_config(.local).yaml 的 defaults.ocr_device（默认 cpu）.
-
-    gpu 需 CUDA 版 paddlepaddle（Paddle 官方索引安装 paddlepaddle-gpu）；若配置为 gpu
-    而当前 paddle 非 CUDA 版或无可用设备，告警并回退 cpu，不让整条链路崩掉。
-    实测（本机 Quadro T1000 4GB）：整页 A4 由 ~35s 降到 ~2s，识别结果一致。
-    """
+def _ov_config():
+    """--ov 相关配置（engine_config(.local).yaml 的 defaults 段）."""
     try:
         import engines as _eng
-        dev = str((_eng.load_config().get("defaults") or {}).get("ocr_device") or "cpu").strip().lower()
+        return _eng.load_config().get("defaults") or {}
     except Exception:
-        dev = "cpu"
-    if dev != "gpu":
-        return "cpu"
-    try:
-        import paddle
-        if not paddle.device.is_compiled_with_cuda() or paddle.device.cuda.device_count() < 1:
-            print("[ov] ocr_device=gpu 但当前 paddle 非 CUDA 版或无可用设备，回退 cpu", flush=True)
-            return "cpu"
-    except Exception as e:
-        print(f"[ov] 检测 GPU 可用性失败（{e}），回退 cpu", flush=True)
-        return "cpu"
-    return "gpu"
+        return {}
 
 
-def _ov_ensure():
-    """Lazy-load 官方 PaddleOCR v6（det+rec，纯文本行；模型已缓存，无需联网）.
+def _ov_dir():
+    """--ov 的 OpenVINO 资产目录（含 ppocr_openvino.py 与 PP-OCRv6 ONNX）.
 
-    进程内 OCR，设备由 defaults.ocr_device 决定（默认 cpu）；不需要 llama-server。
+    机器专属路径写 engine_config.local.yaml（gitignore），不硬编码进代码。
     """
-    global _OV
-    if _OV:
-        return _OV
+    return str(_ov_config().get("ocr_ov_dir") or "").strip()
+
+
+def _ov_openvino_ready():
+    """OpenVINO 后端可用性：目录里有 ppocr_openvino.py，且 openvino 能导入."""
+    d = _ov_dir()
+    if not d or not os.path.exists(os.path.join(d, "ppocr_openvino.py")):
+        return False
+    try:
+        import openvino  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _ov_backend():
+    """--ov 后端，默认 auto 择优：gpu(paddle+CUDA) > openvino(CPU) > cpu(paddle).
+
+    - defaults.ocr_backend 可强制 gpu|openvino|cpu
+    - ocr_device 非 gpu 时先看 OpenVINO，避免为探测 CUDA 白付一次 paddle 导入
+    - 整页 A4 密排实测：gpu ~2.0s / openvino ~2.9s / paddle-cpu ~35s
+    """
+    d = _ov_config()
+    forced = str(d.get("ocr_backend") or "auto").strip().lower()
+    if forced in ("gpu", "openvino", "cpu"):
+        return forced
+    if str(d.get("ocr_device") or "cpu").strip().lower() == "gpu":
+        try:
+            import paddle
+            if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() >= 1:
+                return "gpu"
+            print("[ov] ocr_device=gpu 但 paddle 非 CUDA 版或无可用设备，继续找后备后端", flush=True)
+        except Exception as e:
+            print(f"[ov] 检测 GPU 可用性失败（{e}），继续找后备后端", flush=True)
+    if _ov_openvino_ready():
+        return "openvino"
+    return "cpu"
+
+
+def _ov_load_openvino():
+    """加载 OpenVINO 后端（复用 ocr-ov 的 ppocr_openvino 运行时与 v6 ONNX）."""
+    d = _ov_dir()
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    import cv2
+    import ppocr_openvino as po
+    from openvino import Core
+    cfg = po.MODELS["v6"]
+    core = Core()
+    det_m = core.read_model(cfg["det"])
+    det_m.reshape([1, 3, -1, -1])
+    rec_m = core.read_model(cfg["rec"])
+    rec_m.reshape([1, 3, cfg["rec_height"], -1])
+    return {"kind": "openvino", "po": po, "cv2": cv2, "cfg": cfg,
+            "det": core.compile_model(det_m, "CPU"),
+            "rec": core.compile_model(rec_m, "CPU"),
+            "chars": po.load_char_dict(cfg["dict"])}
+
+
+def _ov_paddle(dev):
     from paddleocr import PaddleOCR
-    ocr = PaddleOCR(
+    return PaddleOCR(
         use_doc_orientation_classify=False, use_doc_unwarping=False,
         use_textline_orientation=False, enable_mkldnn=False,
         text_detection_model_name="PP-OCRv6_small_det",
         text_recognition_model_name="PP-OCRv6_small_rec",
-        device=_ov_device(),
+        device=dev,
     )
-    _OV = {"ocr": ocr}
+
+
+def _ov_ensure():
+    """Lazy-load --ov 后端（进程内，不需要 llama-server）；失败时逐级降级."""
+    global _OV
+    if _OV:
+        return _OV
+    backend = _ov_backend()
+    print(f"[ov] 后端: {backend}", flush=True)
+    if backend == "openvino":
+        try:
+            _OV = _ov_load_openvino()
+            return _OV
+        except Exception as e:
+            print(f"[ov] OpenVINO 后端加载失败（{e}），回退 paddle cpu", flush=True)
+            backend = "cpu"
+    dev = "gpu" if backend == "gpu" else "cpu"
+    try:
+        ocr = _ov_paddle(dev)
+    except Exception as e:
+        if dev != "gpu":
+            raise
+        print(f"[ov] paddle gpu 初始化失败（{e}），回退 cpu", flush=True)
+        dev, ocr = "cpu", _ov_paddle("cpu")
+    _OV = {"kind": "paddle", "ocr": ocr, "device": dev}
     return _OV
 
 
+# 与 PaddleOCR 默认 text_rec_score_thresh 对齐：低于此分数的识别结果丢弃，
+# 否则 OpenVINO 后端会把图标/线条误检出的低置信噪声（〇 / OO / ( 等）混进正文
+_OV_REC_SCORE_THRESH = 0.5
+
+
+def _ov_via_openvino(ov, img_path):
+    """OpenVINO 后端推理：逐行输出，不做行合并（与 PaddleOCR 的 rec_texts 口径一致）."""
+    po, cv2 = ov["po"], ov["cv2"]
+    img = cv2.imread(str(img_path))
+    if img is None:
+        return "", {"error": f"cannot read image {img_path}"}
+    rows = po.ocr_image(img, ov["det"], ov["rec"], None, ov["chars"], ov["cfg"], rotate=False)
+    kept = [r for r in rows if r["conf"] >= _OV_REC_SCORE_THRESH]
+    stats = {"engine": "ov-openvino", "lines_raw": len(rows), "lines_kept": len(kept)}
+    if kept:
+        import numpy as np
+        s = np.array([r["conf"] for r in kept])
+        stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
+    return "\n".join(r["text"] for r in kept).replace("\ufffd", " "), stats
+
+
 def extract_ov(img_path, source=None):
-    """本地 OCR 引擎：官方 PaddleOCR v6（det+rec，无版面/VL；无 GPU/llama-server）."""
-    ocr = _ov_ensure()["ocr"]
-    result = next(iter(ocr.predict(str(img_path))), None)
+    """本地 OCR 引擎：官方 PP-OCRv6（det+rec，纯文本行，无版面/VL；不需要 llama-server）.
+
+    后端由 _ov_backend() 择优：GPU Paddle ≈2.0s / OpenVINO CPU ≈2.9s / Paddle CPU ≈35s
+    （整页 A4 密排，本机实测）。
+    """
+    ov = _ov_ensure()
+    if ov["kind"] == "openvino":
+        return _ov_via_openvino(ov, img_path)
+    result = next(iter(ov["ocr"].predict(str(img_path))), None)
     if result is None:
         return "", {"error": "paddle predict returned nothing"}
     texts = list(result.get("rec_texts") or [])
     scores = list(result.get("rec_scores") or [])
-    stats = {"engine": "paddle-v6"}
+    stats = {"engine": "paddle-v6", "device": ov.get("device", "cpu")}
     if scores:
         import numpy as np
         s = np.array(scores, dtype=float)
