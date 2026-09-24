@@ -45,6 +45,9 @@ python scripts/extract_pdf.py scan.pdf
 python scripts/extract_pdf.py scan.pdf --glm        # 公式/表格保真
 python scripts/extract_pdf.py scan.pdf --dsocr      # 纯文本扫描件提速
 python scripts/extract_pdf.py scan.pdf --hybrid     # 默认混合引擎
+python scripts/extract_pdf.py scan.pdf --ov         # 本地轻量引擎：官方 PaddleOCR v6（缓存模型），
+                                                    # 无 GPU/llama-server 也可用；无 paddle 时自动回退 OpenVINO v6
+python scripts/extract_pdf.py scan.pdf --ov --fast  # 强制 OpenVINO v6 后端（~5x 快，密排小字质量略降）
 
 # 版面分析（表格/示意图定位+裁剪）
 python scripts/extract_pdf.py scan.pdf --layout --pages 1-10
@@ -67,4 +70,5 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | PaddleOCR Hybrid | ~2.5s | ✅ 最好 | 图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
+| ov（本地轻量） | ~1-2s | ⚠️ 一般（纯文本行） | 无 GPU/llama-server 场景 |
 | 云 PaddleOCR-VL-1.6 | ~9.3s | ✅ 与本地同 | 无 GPU 兜底 |

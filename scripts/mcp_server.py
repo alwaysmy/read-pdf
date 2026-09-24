@@ -80,7 +80,7 @@ def _get(path):
 # MCP 工具实现（供 mcp.run / FastMCP 包装）
 # ---------------------------------------------------------------------------
 def extract_pdf(pdf, pages=None, engine=None, source=None, dpi=None, output_dir=None):
-    """从 PDF 提取文本/Markdown。engine: auto|hybrid|glm|dsocr; source: local|cloud."""
+    """从 PDF 提取文本/Markdown。engine: auto|hybrid|glm|dsocr|ov; source: local|cloud."""
     body = {"pdf": pdf}
     if pages:
         body["pages"] = str(pages)
@@ -158,7 +158,7 @@ def main():
                  inputSchema={"type": "object", "properties": {
                      "pdf": {"type": "string", "description": "PDF 路径"},
                      "pages": {"type": "string", "description": "页码范围，如 1-10"},
-                     "engine": {"type": "string", "description": "auto|hybrid|glm|dsocr"},
+                     "engine": {"type": "string", "description": "auto|hybrid|glm|dsocr|ov"},
                      "source": {"type": "string", "description": "local|cloud"},
                  }, "required": ["pdf"]}),
             Tool(name="layout_pdf", description="版面分析：定位表格/示意图并裁剪",

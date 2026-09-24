@@ -1,4 +1,7 @@
-# read-pdf 依赖（Python 3.10+，建议 3.11）
+# read-pdf 核心依赖（Python 3.10–3.13；paddlepaddle 无 3.14 wheel）
+# 只用文本层 PDF：装本文件即可
+# 需要 --ov 的 OpenVINO 后端（--ov --fast）：另装 requirements-ov.txt
+
 # 本地 OCR 引擎（paddle 系，GPU 版按需）
 paddlepaddle-gpu>=3.0       # 无 GPU 改用 paddlepaddle（CPU）
 paddleocr>=3.0
@@ -15,5 +18,6 @@ PyYAML>=6.0
 Pillow>=10.0
 numpy>=1.24
 
-# 本体服务（server.py）
+# 本体服务（server.py）与 MCP server（mcp_server.py）
 Flask>=3.0
+mcp>=1.0

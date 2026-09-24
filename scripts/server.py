@@ -91,7 +91,7 @@ def _run_cli(args, timeout=900):
 
 
 # 输入校验（防 CLI flag 注入 / DoS）
-ENGINE_WHITELIST = {"auto", "hybrid", "glm", "dsocr"}
+ENGINE_WHITELIST = {"auto", "hybrid", "glm", "dsocr", "ov"}
 SOURCE_CHOICES = {"local", "cloud"}
 DPI_RANGE = (50, 600)
 
@@ -154,6 +154,8 @@ def extract():
     eng = body.get("engine")
     if eng and eng != "auto":
         args += [f"--{eng}"]
+    if body.get("fast"):
+        args += ["--fast"]  # 仅 ov 引擎生效：强制 OpenVINO 后端（快、密排小字质量略降）
     if body.get("source"):
         args += ["--source", body["source"]]
     if body.get("dpi"):
