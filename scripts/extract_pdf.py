@@ -179,24 +179,6 @@ def extract_paddle_vl(img_path):
     return str(md) if md else "", {}
 
 
-def extract_ocr(img_path):
-    """PP-OCRv5 traditional — zero hallucination, plain text."""
-    from paddleocr import PaddleOCR
-    ocr = PaddleOCR(lang="ch", use_textline_orientation=True)
-    output = ocr.predict(str(img_path))
-    result = next(iter(output), None)
-    if result is None:
-        return "", {}
-    texts = result.get("rec_texts", [])
-    scores = result.get("rec_scores", [])
-    stats = {}
-    if scores:
-        import numpy as np
-        s_arr = np.array(scores)
-        stats = {"confidence": {"mean": float(s_arr.mean()), "min": float(s_arr.min())}}
-    return "\n".join(texts), stats
-
-
 _OV = {}
 
 
@@ -413,7 +395,6 @@ def parse_args():
     p.add_argument("--glm", action="store_true", help="GLM-OCR Q8_0 (primary, ~4s/page, LaTeX+formulas)")
     p.add_argument("--dsocr", action="store_true", help="DeepSeek-OCR Q8_0 (text-first multimodal, ~0.8s/page, markdown)")
     p.add_argument("--hybrid", action="store_true", help="PaddleOCR Hybrid (Python layout + GGUF VL, ~8s/page)")
-    p.add_argument("--ocr", action="store_true", help="[DEPRECATED] PP-OCRv5 (use --hybrid instead)")
     p.add_argument("--ov", action="store_true",
                    help="本地 PP-OCRv6（进程内 OCR，无需 llama-server/GPU；det+rec 纯文本行，无版面）")
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
@@ -557,8 +538,6 @@ def main():
     elif args.llama:
         engine = "llama"
         ensure_server("hybrid")  # deprecated alias → hybrid engine
-    elif args.ocr:
-        engine = "ocr"
     elif args.ov:
         engine = "ov"  # 本地 PP-OCRv6，无需 ensure_server
     elif use_ocr:
@@ -762,9 +741,6 @@ def main():
     elif engine == "audit":
         extract_fn = extract_qwen
         suffix = "html"
-    elif engine == "ocr":
-        extract_fn = extract_ocr
-        suffix = "md"
     elif engine == "ov":
         extract_fn = extract_ov
         suffix = "md"
