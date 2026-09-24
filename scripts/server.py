@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 
 from flask import Flask, jsonify, request
@@ -58,21 +59,24 @@ def _check_auth():
 
 
 def _run_cli(args, timeout=900):
-    """Run extract_pdf.py subprocess, return (ok, result_dict)."""
+    """Run extract_pdf.py subprocess, return (ok, result_dict).
+
+    输出用临时文件承接，不用管道：受限沙箱下子进程管道（CreatePipe）会被拒绝，
+    原先的 capture_output=True 会让 /extract、/layout 一律 500。文件重定向不受此限。
+    """
     cmd = [sys.executable, str(SCRIPT)] + args
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              encoding="utf-8", errors="replace")
-    except subprocess.TimeoutExpired as e:
-        # 超时：尽力终止子进程，返回可诊断错误
+    with tempfile.TemporaryDirectory(prefix="readpdf_cli_") as td:
+        out_p = pathlib.Path(td) / "stdout.txt"
+        err_p = pathlib.Path(td) / "stderr.txt"
         try:
-            proc = e.process
-            if proc is not None:
-                proc.kill()
-        except Exception:
-            pass
-        return False, {"error": f"处理超时（>{timeout}s），已终止", "timeout": True}
-    stdout = proc.stdout or ""
+            with open(out_p, "w", encoding="utf-8", errors="replace") as fo, \
+                 open(err_p, "w", encoding="utf-8", errors="replace") as fe:
+                proc = subprocess.run(cmd, stdout=fo, stderr=fe, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # subprocess.run 内部已 kill 子进程
+            return False, {"error": f"处理超时（>{timeout}s），已终止", "timeout": True}
+        stdout = out_p.read_text(encoding="utf-8", errors="replace")
+        stderr = err_p.read_text(encoding="utf-8", errors="replace")
     # extract_pdf.py --json 打印多行 JSON；提取第一个 { 到最后一个 } 的完整块
     result = None
     first_brace = stdout.find("{")
@@ -83,10 +87,10 @@ def _run_cli(args, timeout=900):
         except json.JSONDecodeError:
             result = None
     if result is None and proc.returncode != 0:
-        return False, {"error": (proc.stderr or stdout)[-500:]}
+        return False, {"error": (stderr or stdout)[-500:]}
     if result is None:
         # 退出码 0 但没解析出 JSON → 异常，返回 500 级错误（不再静默 raw）
-        return False, {"error": f"输出解析失败（returncode={proc.returncode}）: {(proc.stderr or stdout)[-500:]}"}
+        return False, {"error": f"输出解析失败（returncode={proc.returncode}）: {(stderr or stdout)[-500:]}"}
     return proc.returncode == 0, result
 
 
