@@ -45,9 +45,8 @@ python scripts/extract_pdf.py scan.pdf
 python scripts/extract_pdf.py scan.pdf --glm        # 公式/表格保真
 python scripts/extract_pdf.py scan.pdf --dsocr      # 纯文本扫描件提速
 python scripts/extract_pdf.py scan.pdf --hybrid     # 默认混合引擎
-python scripts/extract_pdf.py scan.pdf --ov         # 本地轻量引擎：官方 PaddleOCR v6（缓存模型），
-                                                    # 无 GPU/llama-server 也可用；无 paddle 时自动回退 OpenVINO v6
-python scripts/extract_pdf.py scan.pdf --ov --fast  # 强制 OpenVINO v6 后端（~5x 快，密排小字质量略降）
+python scripts/extract_pdf.py scan.pdf --ov         # 本地轻量引擎：官方 PaddleOCR v6（模型已缓存），
+                                                    # 进程内 CPU OCR，无 GPU/llama-server 也可用；det+rec 纯文本行，无版面
 
 # 版面分析（表格/示意图定位+裁剪）
 python scripts/extract_pdf.py scan.pdf --layout --pages 1-10

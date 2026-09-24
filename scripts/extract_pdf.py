@@ -200,108 +200,39 @@ def extract_ocr(img_path):
 _OV = {}
 
 
-def _ov_dir():
-    """--ov 引擎模型目录（含 ppocr_openvino.py 与 PP-OCRv6 ONNX 模型）.
+def _ov_ensure():
+    """Lazy-load 官方 PaddleOCR v6（det+rec，纯文本行；模型已缓存，无需联网）.
 
-    取值优先级：env OCR_OV_DIR > engine_config(.local).yaml 的 defaults.ocr_ov_dir。
-    机器专属路径写 engine_config.local.yaml（gitignore），不硬编码进代码。
-    """
-    p = os.environ.get("OCR_OV_DIR", "").strip()
-    if p:
-        return p
-    try:
-        import engines as _eng
-        p = str((_eng.load_config().get("defaults") or {}).get("ocr_ov_dir") or "").strip()
-    except Exception:
-        p = ""
-    if not p:
-        raise RuntimeError(
-            "--ov 引擎缺少模型目录：请在 engine_config.local.yaml 的 defaults.ocr_ov_dir "
-            "填入含 ppocr_openvino.py 与 PP-OCRv6 ONNX 模型的目录，或设置环境变量 OCR_OV_DIR")
-    return p
-
-
-def _ov_ensure(force_fast=False):
-    """Lazy-load local OCR pipeline.
-
-    Default: official PaddleOCR v6 (cached models, best quality on dense/small-
-    text pages, ~0.4s/img). force_fast=True → OpenVINO v6 (no paddle runtime,
-    ~0.08s/img; the BOS ONNX rec diverges slightly from Paddle weights on
-    dense small text). Falls back to OpenVINO when paddle is unavailable.
+    进程内 CPU OCR：不需要 llama-server，也不需要 GPU。
     """
     global _OV
-    if _OV and (_OV["kind"] == "ov") == force_fast:
+    if _OV:
         return _OV
-    build_ov = force_fast
-    if not build_ov:
-        try:
-            from paddleocr import PaddleOCR
-            ocr = PaddleOCR(
-                use_doc_orientation_classify=False, use_doc_unwarping=False,
-                use_textline_orientation=False, enable_mkldnn=False,
-                text_detection_model_name="PP-OCRv6_small_det",
-                text_recognition_model_name="PP-OCRv6_small_rec",
-            )
-            _OV = {"kind": "paddle", "ocr": ocr}
-            return _OV
-        except Exception:
-            build_ov = True
-    ov_dir = _ov_dir()
-    if ov_dir not in sys.path:
-        sys.path.insert(0, ov_dir)
-    import cv2
-    import ppocr_openvino as po
-    from openvino import Core
-    cfg = po.MODELS["v6"]
-    core = Core()
-    det = core.compile_model((lambda m: (m.reshape([1, 3, -1, -1]), m)[1])(core.read_model(cfg["det"])), "CPU")
-    rec = core.compile_model(
-        (lambda m: (m.reshape([1, 3, cfg["rec_height"], -1]), m)[1])(core.read_model(cfg["rec"])), "CPU"
+    from paddleocr import PaddleOCR
+    ocr = PaddleOCR(
+        use_doc_orientation_classify=False, use_doc_unwarping=False,
+        use_textline_orientation=False, enable_mkldnn=False,
+        text_detection_model_name="PP-OCRv6_small_det",
+        text_recognition_model_name="PP-OCRv6_small_rec",
     )
-    _OV = {"kind": "ov", "po": po, "cv2": cv2, "det": det, "rec": rec,
-           "chars": po.load_char_dict(cfg["dict"]), "cfg": cfg}
+    _OV = {"ocr": ocr}
     return _OV
 
 
-def extract_ov(img_path, source=None, force_fast=False):
-    """本地 OCR 引擎：默认官方 PaddleOCRv6（缓存模型，无 GPU/llama-server）；
-    force_fast=True 走 OpenVINO v6（~5x 快，密排小字质量略降）。"""
-    ov = _ov_ensure(force_fast=force_fast)
-    if ov["kind"] == "paddle":
-        result = next(iter(ov["ocr"].predict(str(img_path))), None)
-        if result is None:
-            return "", {"error": "paddle predict returned nothing"}
-        texts = list(result.get("rec_texts") or [])
-        scores = list(result.get("rec_scores") or [])
-        stats = {"engine": "paddle-v6"}
-        if scores:
-            import numpy as np
-            s = np.array(scores, dtype=float)
-            stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
-        return "\n".join(t.replace("\ufffd", " ") for t in texts), stats
-
-    po, cv2 = ov["po"], ov["cv2"] if "cv2" in ov else __import__("cv2")
-    img = cv2.imread(str(img_path))
-    if img is None:
-        return "", {"error": f"cannot read image {img_path}"}
-    rows = po.ocr_image(img, ov["det"], ov["rec"], None, ov["chars"], ov["cfg"], rotate=False)
-    lines = []
-    prev = None
-    for r in rows:
-        box = r["box"]
-        h = abs(box[2][1] - box[0][1])
-        if prev is not None and r["y"] - prev["y"] <= max(0.4 * h, 12):
-            lines[-1] += " " + r["text"]
-        else:
-            lines.append(r["text"])
-        prev = r
-    text = "\n".join(lines).replace("\ufffd", " ")
-    stats = {"engine": "ov"}
-    if rows:
+def extract_ov(img_path, source=None):
+    """本地 OCR 引擎：官方 PaddleOCR v6（det+rec，无版面/VL；无 GPU/llama-server）."""
+    ocr = _ov_ensure()["ocr"]
+    result = next(iter(ocr.predict(str(img_path))), None)
+    if result is None:
+        return "", {"error": "paddle predict returned nothing"}
+    texts = list(result.get("rec_texts") or [])
+    scores = list(result.get("rec_scores") or [])
+    stats = {"engine": "paddle-v6"}
+    if scores:
         import numpy as np
-        s = np.array([r["conf"] for r in rows])
+        s = np.array(scores, dtype=float)
         stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
-    return text, stats
+    return "\n".join(t.replace("\ufffd", " ") for t in texts), stats
 
 
 def extract_pdfmux(pdf_path, pages=None):
@@ -458,9 +389,7 @@ def parse_args():
     p.add_argument("--hybrid", action="store_true", help="PaddleOCR Hybrid (Python layout + GGUF VL, ~8s/page)")
     p.add_argument("--ocr", action="store_true", help="[DEPRECATED] PP-OCRv5 (use --hybrid instead)")
     p.add_argument("--ov", action="store_true",
-                   help="本地 PP-OCRv6（进程内 OCR，无需 llama-server/GPU；默认官方 Paddle，缺 paddle 时回退 OpenVINO）")
-    p.add_argument("--fast", action="store_true",
-                   help="与 --ov 配合：强制 OpenVINO v6 后端（~5x 快；默认官方 Paddle v6，密排小字质量更稳）")
+                   help="本地 PP-OCRv6（进程内 OCR，无需 llama-server/GPU；det+rec 纯文本行，无版面）")
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
     p.add_argument("--html", action="store_true", help="Same as --audit (more intuitive name)")
     p.add_argument("--no-table", action="store_true", help="Skip pdfplumber table extraction")
@@ -811,10 +740,7 @@ def main():
         extract_fn = extract_ocr
         suffix = "md"
     elif engine == "ov":
-        if args.fast:
-            extract_fn = lambda img, source=None: extract_ov(img, source=source, force_fast=True)
-        else:
-            extract_fn = extract_ov
+        extract_fn = extract_ov
         suffix = "md"
 
     # 解析生效源（供缓存 key 与校验用）
@@ -870,10 +796,9 @@ def main():
                             time.sleep(2)
                 else:
                     page_num = batch[0]
-                    # fast 决定实际后端（官方 Paddle vs OpenVINO），必须进 key：
-                    # 否则 --ov 会命中 --ov --fast 的缓存，静默返回另一后端的产物
-                    fast_tag = "_fast" if (engine == "ov" and args.fast) else ""
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}{fast_tag}"
+                    # v2：v1 的 key 未区分 ov 后端（官方 Paddle 与 OpenVINO 共用），
+                    # 可能残留 OpenVINO 写下的产物；换 key 避免把旧结果当 Paddle 复用
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}_v2"
                     cached = cache_get(cache_dir, key) if (use_cache and cache_dir) else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}

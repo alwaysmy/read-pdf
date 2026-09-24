@@ -1,6 +1,5 @@
 # read-pdf 核心依赖（Python 3.10–3.13；paddlepaddle 无 3.14 wheel）
-# 只用文本层 PDF：装本文件即可
-# 需要 --ov 的 OpenVINO 后端（--ov --fast）：另装 requirements-ov.txt
+# 只用文本层 PDF：装本文件即可；--ov 引擎走本文件的 paddle 系依赖
 
 # 本地 OCR 引擎（paddle 系，GPU 版按需）
 paddlepaddle-gpu>=3.0       # 无 GPU 改用 paddlepaddle（CPU）
