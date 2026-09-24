@@ -82,18 +82,19 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 
 | 后端 | 整页 A4 | 小图 | 识别质量 | 前置条件 |
 |---|---|---|---|---|
-| `gpu`（paddlepaddle-gpu） | **~2.0s** | 0.07s | ✅ 最佳（conf 0.98/0.75） | CUDA 版 paddlepaddle + 可用 GPU |
-| `openvino`（CPU） | ~4.3s | 0.11s | ⚠️ 略低（conf 0.82/0.50） | `defaults.ocr_ov_dir` 指向含 `ppocr_openvino.py` 与 PP-OCRv6 ONNX 的目录，且装有 `openvino` |
-| `cpu`（paddlepaddle） | ~35s | 0.61s | ✅ 最佳 | 无（兜底） |
+| `gpu`（paddlepaddle-gpu） | **~2.0s** | 0.07s | ✅ 与 openvino 同级 | CUDA 版 paddlepaddle + 可用 GPU |
+| `openvino`（CPU） | ~4.6s | 0.11s | ✅ 与 paddle 同级 | `defaults.ocr_ov_dir` 指向含 `ppocr_openvino.py` 与 PP-OCRv6 ONNX 的目录，且装有 `openvino`、`pyclipper` |
+| `cpu`（paddlepaddle） | ~35s | 0.61s | ✅ 与 openvino 同级 | 无（兜底） |
 
 `auto` 的选择顺序：`ocr_device: gpu` 且 paddle 有 CUDA 设备 → `gpu`；否则 OpenVINO 资产可用 → `openvino`；再否则 `cpu`。
 可用 `ocr_backend: gpu|openvino|cpu` 强制指定。加载失败会逐级降级并在日志打印 `[ov] 后端: <name>`。
 
-**质量差异须知**：OpenVINO 后端快，但识别质量不与非 OpenVINO 后端完全等价 ——
-同一密排 A4 页对比：106 行 vs 117 行，存在约 5% 字符级差异
-（如 `FREE`→`AREE`、`Available`→`Availabe`、大小写、`•` 项目符号丢失）。
-它的 `rec` 置信度整体偏低（0.82 vs 0.98），是预处理差异所致，**不可跨后端直接比较**。
-对质量敏感的场景请用 `ocr_backend: gpu`/`cpu`，或改用 `--hybrid`/`--glm`。
+**OpenVINO 后端的前后处理已与 PaddleOCR 官方实现逐条对齐**：检测的缩放与
+`DBPostProcess` 参数取自模型 `inference.yml`（`limit_side_len=736/min`、`thresh=0.2`、
+`box_thresh=0.45`、`unclip_ratio=1.4`、不膨胀）；识别按官方 `RecResizeImg` 缩放后**零填充**
+（而非拉伸）；字典按行读取并追加 `use_space_char` 空格；置信度取字符概率**均值**。
+同一密排 A4 页实测两者均为 **117 行、conf 0.98**，残余差异只在个别字形
+（`°C`/`℃`、大小写）与空格，个别处 OpenVINO 反而更准。
 
 > 整页耗时随**识别行数**增长，与渲染 dpi 基本无关（CPU 下 dpi 100 与 150 同为 ~23s）。
 > `enable_mkldnn` 在 Paddle 3.x + PP-OCRv6 上不可用

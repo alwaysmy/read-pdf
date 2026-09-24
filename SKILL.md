@@ -171,7 +171,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 - 目录页、列表页、纯文本扫描件 → `--dsocr`（快 + 结构好）
 - 数学公式、数值表格 → `--glm`（保真）
 
-**PaddleOCR v6 进程内引擎（`--ov`）：不需要 llama-server，也不需要显存。** 官方 PP-OCRv6（det+rec）直接在 Python 进程里跑；后端由 `engine_config.yaml` 的 `defaults.ocr_backend` 控制（默认 `auto`，按 **gpu → openvino → cpu** 择优），可用 `gpu|openvino|cpu` 强制。实测整页 A4 密排：GPU ~2.0s、OpenVINO(CPU) ~4.3s、Paddle CPU ~35s。**OpenVINO 后端快但质量略低**（约 5% 字符级差异），质量敏感时用 `gpu`/`cpu` 或改走 `--hybrid`/`--glm`。**只出纯文本行，没有版面/VL**——表格、公式、多栏排版优先 hybrid/glm。当 hybrid 因显存不足起不来时，这是当下唯一能跑的图像 PDF 路径。
+**PaddleOCR v6 进程内引擎（`--ov`）：不需要 llama-server，也不需要显存。** 官方 PP-OCRv6（det+rec）直接在 Python 进程里跑；后端由 `engine_config.yaml` 的 `defaults.ocr_backend` 控制（默认 `auto`，按 **gpu → openvino → cpu** 择优），可用 `gpu|openvino|cpu` 强制。实测整页 A4 密排：GPU ~2.0s、OpenVINO(CPU) ~4.6s、Paddle CPU ~35s；三者识别质量同级（同页均 117 行 / conf 0.98）。**只出纯文本行，没有版面/VL**——表格、公式、多栏排版优先 hybrid/glm。当 hybrid 因显存不足起不来时，这是当下唯一能跑的图像 PDF 路径。
 
 **`--layout` 版面检测模式（PP-DocLayoutV3）。** 定位表格/示意图区域 → 按 bbox 裁剪存图 → 输出 `{name}_output/layout/{name}_layout.json`（label+bbox+score+page）+ `layout/crops/*.png`。用途：PDF→EPUB 重排、元素提取、版面分析。默认 `--layout-device cpu`（GPU 被 OCR 占用时兜底）。
 
