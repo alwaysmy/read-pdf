@@ -5,6 +5,9 @@ defaults:
   llama_dir: "D:/llm/llama-b9830-bin-win-cuda-13.3-x64"   # llama-server 目录（本地源用）
   device: gpu                # 本地服务默认设备：gpu | cpu（默认 gpu）
   gpu_fallback: true         # 配置 gpu 但检测不到 GPU 时：告警并回退 cpu（仅本地服务）
+  ocr_device: "cpu"          # --ov 进程内 OCR 设备：cpu | gpu
+                             # gpu 需 CUDA 版 paddlepaddle（官方索引装 paddlepaddle-gpu）；
+                             # 配 gpu 但环境不支持时会告警并回退 cpu。本机覆盖写 engine_config.local.yaml
 
 server:                     # 本体 HTTP 服务（server.py / mcp_server.py 默认地址）
   host: "127.0.0.1"         # 仅本机
