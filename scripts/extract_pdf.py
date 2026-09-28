@@ -192,23 +192,25 @@ def _ov_config():
 
 
 def _ov_dir():
-    """--ov 的 OpenVINO 资产目录（含 ppocr_openvino.py 与 PP-OCRv6 ONNX）.
+    """--ov 的 OpenVINO 模型目录（含 PP-OCRv6 ONNX 与字典）.
 
+    运行时脚本 ppocr_openvino.py 随仓库分发（scripts/），这里只解析模型目录；
     机器专属路径写 engine_config.local.yaml（gitignore），不硬编码进代码。
     """
     return str(_ov_config().get("ocr_ov_dir") or "").strip()
 
 
 def _ov_openvino_ready():
-    """OpenVINO 后端可用性：目录里有 ppocr_openvino.py，且 openvino 能导入."""
-    d = _ov_dir()
-    if not d or not os.path.exists(os.path.join(d, "ppocr_openvino.py")):
-        return False
+    """OpenVINO 后端可用性：openvino 能导入，且模型目录里有 v6 的 det/rec ONNX."""
     try:
         import openvino  # noqa: F401
     except Exception:
         return False
-    return True
+    d = _ov_dir()
+    if not d:
+        return False
+    return all(os.path.exists(os.path.join(d, sub, "inference.onnx"))
+               for sub in ("PP-OCRv6_small_det_onnx", "PP-OCRv6_small_rec_onnx"))
 
 
 def _ov_backend():
@@ -236,10 +238,11 @@ def _ov_backend():
 
 
 def _ov_load_openvino():
-    """加载 OpenVINO 后端（复用 ocr-ov 的 ppocr_openvino 运行时与 v6 ONNX）."""
-    d = _ov_dir()
-    if d not in sys.path:
-        sys.path.insert(0, d)
+    """加载 OpenVINO 后端：运行时随仓库分发，模型/字典走 defaults.ocr_ov_dir."""
+    os.environ["OCR_OV_DIR"] = _ov_dir()      # 运行时据此解析模型与字典路径
+    here = str(pathlib.Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)              # 仓库副本优先于外部同名模块
     import cv2
     import ppocr_openvino as po
     from openvino import Core
