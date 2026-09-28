@@ -1,5 +1,6 @@
 # read-pdf 核心依赖（Python 3.10–3.13；paddlepaddle 无 3.14 wheel）
 # 只用文本层 PDF：装本文件即可；--ov 引擎走本文件的 paddle 系依赖
+# --ov 的 OpenVINO 后端（可选）：另装 requirements-ov.txt
 
 # 本地 OCR 引擎（paddle 系，GPU 版按需）
 paddlepaddle-gpu>=3.0       # 无 GPU 改用 paddlepaddle（CPU）
@@ -16,6 +17,11 @@ requests>=2.31
 PyYAML>=6.0
 Pillow>=10.0
 numpy>=1.24
+
+# PaddleX 的检测后处理（DBPostProcess）在【运行时】要求，但其 pip 元数据未声明
+# （实测 Required-by 为空）。不装会让 PaddleOCR 的文本检测直接拒绝加载。
+pyclipper>=1.3
+opencv-contrib-python>=4.5
 
 # 本体服务（server.py）与 MCP server（mcp_server.py）
 Flask>=3.0

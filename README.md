@@ -83,11 +83,19 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | 后端 | 整页 A4 | 小图 | 识别质量 | 前置条件 |
 |---|---|---|---|---|
 | `gpu`（paddlepaddle-gpu） | **~2.0s** | 0.07s | ✅ 与 openvino 同级 | CUDA 版 paddlepaddle + 可用 GPU |
-| `openvino`（CPU） | ~4.6s | 0.11s | ✅ 与 paddle 同级 | `defaults.ocr_ov_dir` 指向含 `ppocr_openvino.py` 与 PP-OCRv6 ONNX 的目录，且装有 `openvino`、`pyclipper` |
+| `openvino`（CPU） | ~4.6s | 0.11s | ✅ 与 paddle 同级 | ① `pip install -r requirements-ov.txt`；② `defaults.ocr_ov_dir` 指向含 `ppocr_openvino.py` 与 PP-OCRv6 ONNX 的目录 |
 | `cpu`（paddlepaddle） | ~35s | 0.61s | ✅ 与 openvino 同级 | 无（兜底） |
 
 `auto` 的选择顺序：`ocr_device: gpu` 且 paddle 有 CUDA 设备 → `gpu`；否则 OpenVINO 资产可用 → `openvino`；再否则 `cpu`。
 可用 `ocr_backend: gpu|openvino|cpu` 强制指定。加载失败会逐级降级并在日志打印 `[ov] 后端: <name>`。
+
+> **OpenVINO 资产不在本仓库内。** 需要一个外部目录（`defaults.ocr_ov_dir`），内含
+> `ppocr_openvino.py`、`PP-OCRv6_small_{det,rec}_onnx/inference.onnx`、`ppocr_keys_v6.txt`。
+> 缺失时 `auto` 会静默跳过 openvino 回退 `cpu`，不影响其他后端。
+>
+> **依赖声明注意**：`paddlex` 的检测后处理（`DBPostProcess`）在**运行时**要求
+> `pyclipper` 与 `opencv-contrib-python`，但其 pip 元数据并未声明（实测 `Required-by` 为空），
+> 因此两者已显式写进 `requirements.txt` —— 否则全新环境装完 paddleocr 后，文本检测会直接拒绝加载。
 
 **OpenVINO 后端的前后处理已与 PaddleOCR 官方实现逐条对齐**：检测的缩放与
 `DBPostProcess` 参数取自模型 `inference.yml`（`limit_side_len=736/min`、`thresh=0.2`、
