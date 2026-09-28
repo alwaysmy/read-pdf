@@ -1,0 +1,5 @@
+# OpenVINO 模型与字典：二进制 / 逐字敏感，禁止任何行尾转换。
+# .onnx 若被当文本处理会损坏；ppocr_keys_v6.txt 逐字对应模型输出类别，
+# 内容一变识别就会错位（该文件含 emoji，按码点切分同样有坑）。
+*.onnx binary
+ppocr_keys_v6.txt -text

@@ -10,9 +10,9 @@ defaults:
                              # 配 gpu 但环境不支持时会告警并回退 cpu。本机覆盖写 engine_config.local.yaml
   ocr_backend: "auto"        # --ov 后端：auto | gpu | openvino | cpu
                              # auto 择优：gpu(paddle+CUDA) > openvino(CPU) > cpu(paddle)
-                             # 整页 A4 密排实测 ≈ 2.0s / 2.9s / 35s
-  ocr_ov_dir: ""             # --ov 的 OpenVINO 资产目录（含 ppocr_openvino.py 与 PP-OCRv6 ONNX）
-                             # 留空则 auto 跳过 OpenVINO；本机路径填 engine_config.local.yaml
+                             # 整页 A4 密排实测 ≈ 2.0s / 4.6s / 35s
+  ocr_ov_dir: ""             # --ov 的 OpenVINO 模型目录（PP-OCRv6 ONNX + 字典）
+                             # 留空则用仓库内 models/；指向自备模型目录可覆盖（本机私有填 local.yaml）
 
 server:                     # 本体 HTTP 服务（server.py / mcp_server.py 默认地址）
   host: "127.0.0.1"         # 仅本机

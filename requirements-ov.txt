@@ -3,13 +3,11 @@
 # 用途：无 CUDA GPU 时的 CPU 快速路径。整页 A4 密排实测约 4.6s，
 # 对比 paddle CPU 约 35s，识别质量同级（同页均 117 行 / conf 0.98）。
 #
-# 运行时脚本 scripts/ppocr_openvino.py 随本仓库分发，无需另备。
-# 但模型与字典不在仓库内，需一个外部目录（路径填 engine_config.local.yaml 的
-# defaults.ocr_ov_dir，或设环境变量 OCR_OV_DIR），内含：
-#   - PP-OCRv6_small_det_onnx/inference.onnx
-#   - PP-OCRv6_small_rec_onnx/inference.onnx
-#   - ppocr_keys_v6.txt                   识别字典（18383 字 + use_space_char 空格）
+# 运行时脚本 scripts/ppocr_openvino.py 与模型 models/（约 30 MB）均已随仓库分发，
+# 装完本文件即可用，无需另行准备。
+# 想改用自备模型：把 engine_config.local.yaml 的 defaults.ocr_ov_dir 指向别处
+# （或设环境变量 OCR_OV_DIR）即可覆盖。
 #
-# 缺资产或缺本文件依赖时，ocr_backend=auto 会跳过 openvino 直接回退 cpu，
+# 未装本文件的 openvino 时，ocr_backend=auto 会跳过 openvino 直接回退 cpu，
 # 不会报错；想看选了哪个后端，留意日志里的 `[ov] 后端: <name>`。
 openvino>=2026.0

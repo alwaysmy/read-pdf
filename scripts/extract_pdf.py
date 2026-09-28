@@ -194,10 +194,13 @@ def _ov_config():
 def _ov_dir():
     """--ov 的 OpenVINO 模型目录（含 PP-OCRv6 ONNX 与字典）.
 
-    运行时脚本 ppocr_openvino.py 随仓库分发（scripts/），这里只解析模型目录；
-    机器专属路径写 engine_config.local.yaml（gitignore），不硬编码进代码。
+    优先 defaults.ocr_ov_dir（外置/自备模型）；缺省用仓库内 models/。
+    运行时脚本 ppocr_openvino.py 随仓库分发（scripts/）。
     """
-    return str(_ov_config().get("ocr_ov_dir") or "").strip()
+    d = str(_ov_config().get("ocr_ov_dir") or "").strip()
+    if d:
+        return d
+    return str(pathlib.Path(__file__).resolve().parent.parent / "models")
 
 
 def _ov_openvino_ready():
