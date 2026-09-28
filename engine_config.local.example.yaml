@@ -1,28 +1,67 @@
-# engine_config.local.example.yaml — 本机私有覆盖模板
-# 复制为 engine_config.local.yaml（已 gitignore）后按本机情况修改：
-#   - 填云端真实 token（cloud api_key）
-#   - 换模型路径 / 端口 / 本体服务端口
-# 本文件提交；engine_config.local.yaml 不提交
+# engine_config.local.example.yaml — 本机私有覆盖【完整字段清单】
+#
+# 用法：复制为 engine_config.local.yaml（已 gitignore）后按本机情况填写。
+#
+# 分层原则（重要）：
+#   engine_config.yaml            被跟踪 —— 只放可移植默认值（端口/参数/下载来源/占位 key）
+#   engine_config.local.yaml      不提交 —— 全部机器专属值：llama-server 目录、模型路径、
+#                                 设备与后端选择、真实云端 token
+#   engine_config.local.example.yaml  本文件，被跟踪，只作模板
+#
+# 所以：任何"换台机器就要改"的值都属于本文件，不要写回 engine_config.yaml。
+# 只填本机真正需要的项即可，未填的键沿用 engine_config.yaml 的默认值。
+
+defaults:
+  llama_dir: "D:/llm/llama-server 所在目录"     # 必填（只有用本地 llama 系引擎才需要）
+  device: "gpu"                # 本地 llama-server 设备：gpu | cpu
+  ocr_device: "gpu"            # --ov 的 paddle 设备：gpu | cpu（gpu 需 CUDA 版 paddlepaddle）
+  # ocr_backend: "auto"        # --ov 后端：auto（按 ocr_device 走 paddle）| gpu | openvino | cpu
+  # ocr_model_tier: "small"    # --ov 模型档位：tiny | small | medium
+  # ocr_ov_dir: ""             # OpenVINO 模型目录；留空用仓库内 models/
+
 engines:
-  # 示例：本机填云端 token（hybrid 与 paddle_vl 两处）
-  hybrid:
+  hybrid:                      # Paddle 版面检测 + PaddleOCR-VL GGUF（llama.cpp）
+    sources:
+      local:
+        server:
+          model: "D:/models/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
+          mmproj: "D:/models/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+          # port: 12336       # 撞端口时才改
+      cloud:
+        api_key: "your-aistudio-token-here"     # 真实值只写这里
+
+  glm:                         # GLM-OCR Q8_0（仅本地）
+    sources:
+      local:
+        server:
+          model: "D:/models/GLM-OCR-GGUF/GLM-OCR-Q8_0.gguf"
+          mmproj: "D:/models/GLM-OCR-GGUF/mmproj-GLM-OCR-Q8_0.gguf"
+
+  dsocr:                       # DeepSeek-OCR Q8_0（仅本地）
+    sources:
+      local:
+        server:
+          model: "D:/models/DeepSeek-OCR/DeepSeek-OCR-Q8_0.gguf"
+          mmproj: "D:/models/DeepSeek-OCR/mmproj-DeepSeek-OCR-Q8_0.gguf"
+
+  qwen:                        # Qwen3.6-35B-A3B（仅本地，--audit）
+    sources:
+      local:
+        server:
+          model: "D:/models/Qwen3.6-35B-A3B/Qwen3.6-35B-A3B-IQ4_NL.gguf"
+          mmproj: "D:/models/Qwen3.6-35B-A3B/mmproj-f16.gguf"
+
+  paddle_vl:                   # 云端解析（仅云源）
     sources:
       cloud:
-        api_key: "your-aistudio-token-here"
-  paddle_vl:
-    sources:
-      cloud:
-        api_key: "your-aistudio-token-here"
+        api_key: "your-aistudio-token-here"     # 真实值只写这里
 
-  # 示例：换 GLM 模型路径
-  # glm:
-  #   sources:
-  #     local:
-  #       server:
-  #         model: "D:/my/models/GLM-OCR-Q8_0.gguf"
-  #         port: 12335
-
-# 示例：改本体 HTTP 服务端口（server.py / mcp_server.py 默认 8123）
+# 本体 HTTP 服务（server.py / mcp_server.py 默认 8123）
 # server:
 #   host: "127.0.0.1"
-#   port: 9000
+#   port: 8123
+
+# 不在本配置里的机器专属项（它们与仓库运行环境绑定，见 docs/SETUP_GUIDE.md）：
+#   - Python 解释器与虚拟环境（供 scripts/*.py 与 MCP server 使用；
+#     MCP 侧在 DSH 的 cordis.patch.yml 里指定，仓库代码统一用 sys.executable）
+#   - PaddleX 官方模型缓存目录（默认 ~/.paddlex/official_models，由 PaddleX 自管）

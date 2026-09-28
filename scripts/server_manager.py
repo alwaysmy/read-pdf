@@ -91,10 +91,21 @@ def start(name, server_cfg):
             flush=True)
         raise FileNotFoundError(exe_path)
 
-    # 模型/投影文件存在性校验（提前给出友好提示）
+    # 模型/投影文件校验（提前给出友好提示）
+    # 空值必须一并拦下：engine_config.yaml 里这些键是占位空串（机器专属值在
+    # engine_config.local.yaml），若放过去，会先撞上显存检查或 args 取值失败，
+    # 报出与真实原因无关的错误。
     for fkey in ("model", "mmproj"):
-        fpath = server_cfg.get(fkey, "")
-        if fpath and not os.path.exists(fpath):
+        fpath = str(server_cfg.get(fkey) or "").strip()
+        if not fpath:
+            print(
+                f"[server_manager] 引擎 '{name}' 未配置 {fkey}\n"
+                f"  → 模型路径属机器专属配置，请写进 engine_config.local.yaml 的\n"
+                f"    engines.{name}.sources.local.server.{fkey}\n"
+                f"    字段清单见 engine_config.local.example.yaml，下载来源见 docs/SETUP_GUIDE.md",
+                flush=True)
+            raise RuntimeError(f"[server_manager] {name} 未配置 {fkey}")
+        if not os.path.exists(fpath):
             print(
                 f"[server_manager] 找不到引擎 '{name}' 的 {fkey}: {fpath}\n"
                 f"  → 请按 docs/SETUP_GUIDE.md 下载模型，并在 engine_config.local.yaml 填正确路径",
