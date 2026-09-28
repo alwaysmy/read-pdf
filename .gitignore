@@ -9,6 +9,7 @@ engine_config.yaml
 
 # 本地测试产物（目录；bench_*.py 脚本保留提交）
 tests/*_output/
+tests/all_tests/
 tests/bench/
 tests/bench_cloud/
 tests/bench_hybrid2/
