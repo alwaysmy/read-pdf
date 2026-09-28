@@ -8,6 +8,7 @@
 # 想改用自备模型：把 engine_config.local.yaml 的 defaults.ocr_ov_dir 指向别处
 # （或设环境变量 OCR_OV_DIR）即可覆盖。
 #
-# 未装本文件的 openvino 时，ocr_backend=auto 会跳过 openvino 直接回退 cpu，
-# 不会报错；想看选了哪个后端，留意日志里的 `[ov] 后端: <name>`。
+# 装不装本文件都不影响 auto：OpenVINO 只在 defaults.ocr_backend 显式设为
+# "openvino" 时启用（auto 只按 ocr_device 走 paddle 后端，不做隐式择优）。
+# 选了哪个后端，留意日志里的 `[ov] 后端: <name>`。
 openvino>=2026.0

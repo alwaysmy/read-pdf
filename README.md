@@ -83,17 +83,19 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | 后端 | 整页 A4 | 小图 | 识别质量 | 前置条件 |
 |---|---|---|---|---|
 | `gpu`（paddlepaddle-gpu） | **~2.0s** | 0.07s | ✅ 与 openvino 同级 | CUDA 版 paddlepaddle + 可用 GPU |
-| `openvino`（CPU） | ~4.6s | 0.11s | ✅ 与 paddle 同级 | `pip install -r requirements-ov.txt`（运行时与模型已随仓库，无需另备） |
 | `cpu`（paddlepaddle） | ~35s | 0.61s | ✅ 与 openvino 同级 | 无（兜底） |
+| `openvino`（CPU） | ~4.6s | 0.11s | ✅ 与 paddle 同级 | **须显式配置**；另需 `pip install -r requirements-ov.txt`（运行时与模型已随仓库） |
 
-`auto` 的选择顺序：`ocr_device: gpu` 且 paddle 有 CUDA 设备 → `gpu`；否则 OpenVINO 模型可用 → `openvino`；再否则 `cpu`。
-可用 `ocr_backend: gpu|openvino|cpu` 强制指定。加载失败会逐级降级并在日志打印 `[ov] 后端: <name>`。
+**后端选择完全由配置决定，不做隐式择优**：`ocr_backend: auto`（默认）只按 `ocr_device` 选 paddle
+后端 —— `gpu` → paddle-gpu，`cpu` → paddle-cpu；环境不支持 CUDA 时告警并回退 paddle-cpu。
+可用 `ocr_backend: gpu|openvino|cpu` 强制指定。
 
-> **运行时与模型都随仓库分发。** `scripts/ppocr_openvino.py`（前后处理与 PaddleOCR
-> 官方实现逐条对齐）和 `models/`（PP-OCRv6 small det/rec 的 ONNX + 字典，约 30 MB）
-> 都在仓库内，clone 下来装好依赖即可用，无需另行准备模型。
-> 想改用自备模型，把 `defaults.ocr_ov_dir` 指过去即可覆盖；
-> 未装 `openvino` 包时 `auto` 会静默跳过 openvino 回退 `cpu`，不影响其他后端。
+> **OpenVINO 不会被 `auto` 自动选中。** 模型（`models/`，约 30 MB）和运行时
+> （`scripts/ppocr_openvino.py`）虽随仓库分发，但 `auto` 不会因为"装了 openvino 包"
+> 就改跑 OpenVINO —— 否则同一份配置在不同机器上会跑出不同后端。要用就显式写
+> `ocr_backend: openvino`（有可用 OpenVINO 时 `auto` 会在日志里提示这一行）。
+> 想改用自备模型，把 `defaults.ocr_ov_dir` 指过去即可覆盖。
+> 加载失败会告警并回退 paddle-cpu，日志里打印 `[ov] 后端: <name>`。
 >
 > **依赖声明注意**：`paddlex` 的检测后处理（`DBPostProcess`）在**运行时**要求
 > `pyclipper` 与 `opencv-contrib-python`，但其 pip 元数据并未声明（实测 `Required-by` 为空），

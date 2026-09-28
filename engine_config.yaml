@@ -9,7 +9,8 @@ defaults:
                              # gpu 需 CUDA 版 paddlepaddle（官方索引装 paddlepaddle-gpu）；
                              # 配 gpu 但环境不支持时会告警并回退 cpu。本机覆盖写 engine_config.local.yaml
   ocr_backend: "auto"        # --ov 后端：auto | gpu | openvino | cpu
-                             # auto 择优：gpu(paddle+CUDA) > openvino(CPU) > cpu(paddle)
+                             # auto = 按 ocr_device 选 paddle 后端（gpu→paddle-gpu / cpu→paddle-cpu）
+                             # OpenVINO 不会被自动选中；想用须显式写 openvino
                              # 整页 A4 密排实测 ≈ 2.0s / 4.6s / 35s
   ocr_ov_dir: ""             # --ov 的 OpenVINO 模型目录（PP-OCRv6 ONNX + 字典）
                              # 留空则用仓库内 models/；指向自备模型目录可覆盖（本机私有填 local.yaml）

@@ -217,11 +217,16 @@ def _ov_openvino_ready():
 
 
 def _ov_backend():
-    """--ov 后端，默认 auto 择优：gpu(paddle+CUDA) > openvino(CPU) > cpu(paddle).
+    """--ov 后端选择，完全由配置决定，不做隐式择优.
 
-    - defaults.ocr_backend 可强制 gpu|openvino|cpu
-    - ocr_device 非 gpu 时先看 OpenVINO，避免为探测 CUDA 白付一次 paddle 导入
-    - 整页 A4 密排实测：gpu ~2.0s / openvino ~2.9s / paddle-cpu ~35s
+    - `ocr_backend: gpu | openvino | cpu` → 强制该后端
+    - `ocr_backend: auto`（默认）→ 按 `ocr_device` 选 paddle 后端：
+      gpu → paddle-gpu；cpu → paddle-cpu（环境不支持 CUDA 时告警并回退 paddle-cpu）
+    - OpenVINO 不会被 auto 自动选中：模型虽随仓库分发，但想用需显式写
+      `ocr_backend: openvino`（否则同一份配置在不同机器上会因是否装了 openvino
+      而跑出不同后端）
+
+    整页 A4 密排实测：paddle-gpu ~2.0s / OpenVINO(CPU) ~4.6s / paddle-cpu ~35s。
     """
     d = _ov_config()
     forced = str(d.get("ocr_backend") or "auto").strip().lower()
@@ -232,16 +237,17 @@ def _ov_backend():
             import paddle
             if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() >= 1:
                 return "gpu"
-            print("[ov] ocr_device=gpu 但 paddle 非 CUDA 版或无可用设备，继续找后备后端", flush=True)
+            print("[ov] ocr_device=gpu 但 paddle 非 CUDA 版或无可用设备，回退 paddle cpu", flush=True)
         except Exception as e:
-            print(f"[ov] 检测 GPU 可用性失败（{e}），继续找后备后端", flush=True)
+            print(f"[ov] 检测 GPU 可用性失败（{e}），回退 paddle cpu", flush=True)
     if _ov_openvino_ready():
-        return "openvino"
+        print("[ov] 提示：OpenVINO 后端可用（模型与 openvino 包均在），"
+              "如需启用请把 defaults.ocr_backend 设为 \"openvino\"", flush=True)
     return "cpu"
 
 
 def _ov_load_openvino():
-    """加载 OpenVINO 后端：运行时随仓库分发，模型/字典走 defaults.ocr_ov_dir."""
+    """加载 OpenVINO 后端：运行时随仓库分发，模型/字典走 _ov_dir()（缺省仓库内 models/）."""
     if _ov_tier() != "small":
         print(f"[ov] OpenVINO 后端固定用 PP-OCRv6 small（仅该规格有 ONNX），"
               f"已忽略 ocr_model_tier={_ov_tier()}", flush=True)
@@ -338,8 +344,8 @@ def _ov_via_openvino(ov, img_path):
 def extract_ov(img_path, source=None):
     """本地 OCR 引擎：官方 PP-OCRv6（det+rec，纯文本行，无版面/VL；不需要 llama-server）.
 
-    后端由 _ov_backend() 择优：GPU Paddle ≈2.0s / OpenVINO CPU ≈2.9s / Paddle CPU ≈35s
-    （整页 A4 密排，本机实测）。
+    后端由 _ov_backend() 按配置决定（不做隐式择优）：paddle-gpu ≈2.0s /
+    OpenVINO CPU ≈4.6s / paddle-cpu ≈35s（整页 A4 密排，本机实测）。
     """
     ov = _ov_ensure()
     if ov["kind"] == "openvino":
