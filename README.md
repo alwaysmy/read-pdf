@@ -99,6 +99,21 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 > `pyclipper` 与 `opencv-contrib-python`，但其 pip 元数据并未声明（实测 `Required-by` 为空），
 > 因此两者已显式写进 `requirements.txt` —— 否则全新环境装完 paddleocr 后，文本检测会直接拒绝加载。
 
+### 模型规格（`defaults.ocr_model_tier`）
+
+PP-OCRv6 有 tiny / small / medium 三档（**无 large**），默认 `small`（即仓库内 `models/` 那一档）。
+只作用于 paddle 后端；OpenVINO 后端目前只有 small 的 ONNX，配 medium 会被忽略并在日志提示。
+
+| 输入 | `small`（默认） | `medium` |
+|---|---|---|
+| 干净 150dpi 整页 A4 | **2.67s**，conf 0.984/0.75 | 4.97s（1.9x），conf 0.983/0.80 |
+| 劣质 96dpi 整页 A4 | 2.02s，conf 0.955/**0.32** | 4.40s，conf **0.978/0.63** |
+| 极差 72dpi 整页 A4 | 1.93s，conf 0.952/**0.00** | 3.88s，conf 0.962/**0.46** |
+
+干净文档用 `small` 即可（medium 慢约 2x 而基本无收益）；**扫描质量差、或遇手写 / 异体字时
+切 `medium` 更划算** —— 96dpi 下 small 会产出 `Aallalble`、`T max.` 这类垃圾行，medium 则读对。
+medium 权重约 132 MB（det 59 + rec 73），首次使用由 PaddleX 自动下载并缓存。
+
 **OpenVINO 后端的前后处理已与 PaddleOCR 官方实现逐条对齐**：检测的缩放与
 `DBPostProcess` 参数取自模型 `inference.yml`（`limit_side_len=736/min`、`thresh=0.2`、
 `box_thresh=0.45`、`unclip_ratio=1.4`、不膨胀）；识别按官方 `RecResizeImg` 缩放后**零填充**

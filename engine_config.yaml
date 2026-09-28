@@ -13,6 +13,10 @@ defaults:
                              # 整页 A4 密排实测 ≈ 2.0s / 4.6s / 35s
   ocr_ov_dir: ""             # --ov 的 OpenVINO 模型目录（PP-OCRv6 ONNX + 字典）
                              # 留空则用仓库内 models/；指向自备模型目录可覆盖（本机私有填 local.yaml）
+  ocr_model_tier: "small"    # --ov 的模型规格：tiny | small | medium（v6 无 large）
+                             # 仅作用于 paddle 后端（gpu/cpu）；OpenVINO 只有 small 的 ONNX。
+                             # 整页 A4 实测：干净页 small/medium 基本持平而 medium 慢约 2x；
+                             # 劣质输入（96dpi）medium 明显更稳——最低行置信度 0.63 vs 0.32
 
 server:                     # 本体 HTTP 服务（server.py / mcp_server.py 默认地址）
   host: "127.0.0.1"         # 仅本机

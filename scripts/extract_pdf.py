@@ -242,6 +242,9 @@ def _ov_backend():
 
 def _ov_load_openvino():
     """加载 OpenVINO 后端：运行时随仓库分发，模型/字典走 defaults.ocr_ov_dir."""
+    if _ov_tier() != "small":
+        print(f"[ov] OpenVINO 后端固定用 PP-OCRv6 small（仅该规格有 ONNX），"
+              f"已忽略 ocr_model_tier={_ov_tier()}", flush=True)
     os.environ["OCR_OV_DIR"] = _ov_dir()      # 运行时据此解析模型与字典路径
     here = str(pathlib.Path(__file__).resolve().parent)
     if here not in sys.path:
@@ -261,13 +264,26 @@ def _ov_load_openvino():
             "chars": po.load_char_dict(cfg["dict"])}
 
 
+def _ov_tier():
+    """--ov 的模型规格：defaults.ocr_model_tier（tiny|small|medium，默认 small）.
+
+    只作用于 paddle 后端（gpu/cpu）——OpenVINO 后端目前只有 small 的 ONNX。
+    实测（整页 A4 密排）：干净页 small 与 medium 基本持平而 medium 慢约 1.9-2.2x；
+    劣质输入（96dpi 模拟差扫描件）medium 明显更稳——最低行置信度 0.63 vs 0.32，
+    small 会产出 `Aallalble`/`T max.` 这类垃圾行。难读的文档可临时切 medium。
+    """
+    t = str(_ov_config().get("ocr_model_tier") or "small").strip().lower()
+    return t if t in ("tiny", "small", "medium") else "small"
+
+
 def _ov_paddle(dev):
+    tier = _ov_tier()
     from paddleocr import PaddleOCR
     return PaddleOCR(
         use_doc_orientation_classify=False, use_doc_unwarping=False,
         use_textline_orientation=False, enable_mkldnn=False,
-        text_detection_model_name="PP-OCRv6_small_det",
-        text_recognition_model_name="PP-OCRv6_small_rec",
+        text_detection_model_name=f"PP-OCRv6_{tier}_det",
+        text_recognition_model_name=f"PP-OCRv6_{tier}_rec",
         device=dev,
     )
 
@@ -333,7 +349,7 @@ def extract_ov(img_path, source=None):
         return "", {"error": "paddle predict returned nothing"}
     texts = list(result.get("rec_texts") or [])
     scores = list(result.get("rec_scores") or [])
-    stats = {"engine": "paddle-v6", "device": ov.get("device", "cpu")}
+    stats = {"engine": "paddle-v6", "tier": _ov_tier(), "device": ov.get("device", "cpu")}
     if scores:
         import numpy as np
         s = np.array(scores, dtype=float)
