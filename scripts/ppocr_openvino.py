@@ -6,14 +6,15 @@ limit_type="min") + DBPostProcess（thresh/box_thresh/unclip_ratio 取自模型
 inference.yml），识别用 RecResizeImg 的缩放+零填充，解码用 CTCLabelDecode 的
 字典口径（按行读 + use_space_char 追加空格）与置信度均值。
 
-模型与字典不在本仓库内：目录由环境变量 OCR_OV_DIR 指定
-（read-pdf 侧来自 engine_config.local.yaml 的 defaults.ocr_ov_dir，会自动注入）。
+模型与字典在 `<repo>/models/`（本文件位于 `<repo>/scripts/`），可直接运行；
+用环境变量 OCR_OV_DIR 可指向别处覆盖（read-pdf 侧由 defaults.ocr_ov_dir 注入）。
 """
 
 import argparse
 import json
 import math
 import os
+import pathlib
 import sys
 import time
 
@@ -22,23 +23,17 @@ import numpy as np
 import pyclipper
 from openvino import Core
 
-BASE = os.environ.get("OCR_OV_DIR", "").strip()
-if not BASE:
-    raise RuntimeError(
-        "未设置 OCR_OV_DIR：请指向含 PP-OCRv6_small_{det,rec}_onnx 与 "
-        "ppocr_keys_v6.txt 的目录（read-pdf 侧由 engine_config.local.yaml 的 "
-        "defaults.ocr_ov_dir 提供，会自动注入本变量）")
+
+def default_base() -> str:
+    """模型目录：优先 OCR_OV_DIR，缺省用仓库内 models/."""
+    env = os.environ.get("OCR_OV_DIR", "").strip()
+    if env:
+        return env
+    return str(pathlib.Path(__file__).resolve().parent.parent / "models")
+
+
+BASE = default_base()
 MODELS = {
-    "v2": {
-        "name": "PP-OCRv2 mobile",
-        "det": BASE + r"\ch_ppocr_mobile_v2.0_det_infer\inference.pdmodel",
-        "cls": BASE + r"\ch_ppocr_mobile_v2.0_cls_infer\inference.pdmodel",
-        "rec": BASE + r"\ch_ppocr_mobile_v2.0_rec_infer\inference.pdmodel",
-        "dict": BASE + r"\ppocr_keys_v1.txt",
-        "rec_height": 32,
-        "dict_offset": 0,
-        "dict_trim": 0,
-    },
     "v6": {
         "name": "PP-OCRv6 small",
         "det": BASE + r"\PP-OCRv6_small_det_onnx\inference.onnx",
@@ -360,16 +355,25 @@ def ocr_image(img, det_comp, rec_comp, cls_comp, char_list, cfg, rotate):
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    ap = argparse.ArgumentParser(description="PaddleOCR (PP-OCRv2 mobile / PP-OCRv6) on OpenVINO, no PaddlePaddle")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # 错误信息走 stderr，中文需同配
+    ap = argparse.ArgumentParser(description="PP-OCRv6 on OpenVINO, no PaddlePaddle")
     ap.add_argument("images", nargs="+", help="image path(s)")
-    ap.add_argument("--model", choices=["v6", "v2"], default=DEFAULT_MODEL,
-                    help="model backend (default: v6 = PP-OCRv6 small ONNX)")
-    ap.add_argument("--cls", action="store_true", help="enable per-line 180-degree correction (v2 only)")
+    ap.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL,
+                    help=f"model backend (default: {DEFAULT_MODEL} = PP-OCRv6 small ONNX)")
+    ap.add_argument("--cls", action="store_true",
+                    help="enable per-line 180-degree correction (needs a model shipping a cls model; PP-OCRv6 does not, so this is a no-op)")
     ap.add_argument("--rotate", action="store_true", help="auto try 0/90/180/270 degree whole-image rotations")
     ap.add_argument("--json", action="store_true", help="emit JSON")
     args = ap.parse_args()
     rotate = args.rotate
     cfg = MODELS[args.model]
+
+    missing = [p for p in (cfg["det"], cfg["rec"], cfg["dict"]) if not os.path.exists(p)]
+    if missing:
+        sys.exit(
+            f"找不到模型文件（BASE={BASE}）：\n  " + "\n  ".join(missing) +
+            "\n请设置环境变量 OCR_OV_DIR 指向含 PP-OCRv6_small_{det,rec}_onnx 与 "
+            "ppocr_keys_v6.txt 的目录。")
 
     core = Core()
     det_model = core.read_model(cfg["det"])
