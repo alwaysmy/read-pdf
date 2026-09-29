@@ -91,8 +91,14 @@ def main() -> int:
     ap.add_argument("--concurrency", type=int, default=16)
     args = ap.parse_args()
 
-    a, b = args.pages.split("-")
-    page_numbers = list(range(int(a), int(b) + 1))
+    # 支持混合格式："5-10" / "12,13" / "5-10,12"
+    page_numbers = []
+    for part in args.pages.split(","):
+        if "-" in part:
+            a, b = part.split("-")
+            page_numbers.extend(range(int(a), int(b) + 1))
+        else:
+            page_numbers.append(int(part))
     paths = render_pages(page_numbers)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

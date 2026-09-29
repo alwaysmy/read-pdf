@@ -1,7 +1,7 @@
 # 候选方案调研：Unlimited-OCR (vLLM) 与 firecrawl/pdf-inspector
 
 - 调研日期：2026-09-29
-- 状态：调研完成；Unlimited-OCR 已本机实测（llama.cpp 路线，见文末实测记录）；pdf-inspector 未实测
+- 状态：**调研 + 实测完成**（Unlimited-OCR llama.cpp 路线吞吐与 Q8_0 量化实验、四引擎六页质量对比、pdf-inspector 文本层接入测试，均见文末实测记录）
 - 历史记录核查：全盘文件名 + 文件内容搜索（`unlimited-ocr` / `pdf-inspector` / `firecrawl`）均为 0 命中，本机此前**没有**这两个方案的调研记录。
 
 ## 现有基线（对比参照）
@@ -171,19 +171,70 @@
 | 修复后端到端 | **2.32s/页**（差分法：12页 48s vs 6页 34.1s），与历史 2.5s/页基线吻合 |
 | 修复前实测 | 10.74s/页（CPU 回退）、首请求 62.5s（CUDA JIT） |
 
+### 性能优化实验：Q8_0 量化（2026-09-29 第二轮）——**质量否决，保持 BF16**
+
+Timing 分解（单请求，np4）：prompt eval 647ms/908tok（1402 tok/s）、decode 1503ms/676tok（449 tok/s，**占 70%**）、mmproj 编码 ~100ms。decode 为 memory-bound → 主攻量化。
+
+| 方案 | 速度 | 显存 | 质量结果 |
+|---|---|---|---|
+| **BF16（现状）** | 正文 1.38s/页、难页 3.24s/页、并发 42.7 页/分 | 9.5GB | 基准，12 页全稳定 finish=stop |
+| Q8_0 无惩罚 | 正文 2.13s/页（-18%→稳态1.14s）、难页 2.37s/页（-27%）、并发 48 页/分（+12%）、p12/p20/p29 内容零差异（bbox ±1px） | 7.0GB（-2.5GB） | **p7 稀疏页概率性循环**（serial 崩 4096 打满 / 并发正常 205tok —— 量化 logits 平坦化后处于循环边缘，调度抖动决定崩不崩） |
+| Q8_0 + DRY(m1.5,a-l2) | 正文 1.13s/页 | 7.0GB | p7 修复（与 BF16 逐字一致），但 **p12 符号表尾部碎片化**（"1.38" 断行、"自由空间"→"由空间"） |
+| Q8_0 + DRY(m2.0,a-l4) | 1.73s/页 | 7.0GB | p12 仍膨胀 43%（2763→4313ch）；**p7 幻觉**（编造财报"董事会信息披露"文本、"三"字填充） |
+| Q8_0 + repeat-penalty 1.1 | — | 7.0GB | p7 丢内容（249 vs 360ch）；**p12 反而循环**（4096 打满 7444ch） |
+
+**结论：Q8_0 提速 18-27%、省 2.5GB，但在本模型上破坏输出稳定性（循环/幻觉/丢内容三类退化轮流出现），任何惩罚补救都引入新伤害 —— 不满足"保证质量"前提，正式保持 BF16。** 无损空间已尽：flash-attn 日志报 `not supported by CUDA0`（sm_120 Blackwell，待 llama.cpp 后续版本），decode 449 tok/s 即当前无损水位。
+
+### 四引擎六页质量对比（2026-09-29，回答"Unlimited-OCR 是否更好"）
+
+样本：微弱信号检测教材 6 个代表页 —— p12 分栏符号表、p13/p17 目录页、p20/p29 表格+公式、p34 密集公式推导。四引擎 = Unlimited-OCR(BF16) / Hybrid(PaddleVL1.6+版面) / GLM-OCR / DeepSeek-OCR，同页并排 + 视觉审查（子代理读图交叉验证 + 逐字文本精读）。
+
+| 排名 | 引擎 | 结论 |
+|---|---|---|
+| **1** | **GLM-OCR** | 6/6 页第一：目录页缩进+点线+页码零错、p34 公式齐全 LaTeX 正确、p20/p29 表格行列完整数值零错 |
+| 2 | Hybrid | 数值/推导可靠；硬伤：p13 标题"目录"→"**日录**"、p12 右栏漏 5 条、`\cos` 丢反斜杠 |
+| 3 | **Unlimited-OCR** | 召回最全（唯一带 bbox label、页眉页码几乎不漏）；但 p17 目录页码 336→**335**、p34 **(4) 节整块重复**+互相关嵌套断链、`<table>` 无行列标签结构散架 |
+| 4 | DeepSeek-OCR | 错误性质最危险：表格**编造数值**（p20 吉时利行 4 处错值）、公式丢项（1/2π、1−cos）、SNIR→SNR 混淆 |
+
+**直接回答：Unlimited-OCR 不是质量第一** —— 正文页与 Hybrid 打平、结构页（目录/表格/公式）被 GLM 反超。其真实优势 = 最全召回 + label/bbox 结构 + 最高吞吐（42.7 页/分），适合"吞吐优先 + 后处理兜结构"场景；弱项（复杂布局）与调研预期一致。
+
+审查报告：`tests/ocr_engine_visual_review_20260929_183735.md`（含 4 项"无法确认"标注）；并排对比页 `TEST_RESULTS/read-pdf-bench_20260929/compare_p{12,13,17,20,29,34}.html`。
+
+### pdf-inspector 文本层接入实测（v1.23.0，2026-09-29）
+
+样本：`5 高速数据传输系列连接器选型手册.pdf`（261 页文本层）+ 合成 Mixed（3 文本页+3 扫描页）。
+
+| 项 | 结果 |
+|---|---|
+| 分类 | scanned 0.076s/0.95 ✓；text_based 全书 16.8s/0.62（**全量扫描，需缓存分类结果**）；Mixed 合成 → `mixed` ✓ 0.003s |
+| 逐页路由 | 扫描页 `scanned` 准确 ✓；**文本页 `suspected_garbled_text` 误报**（cmap_gaps 空、fitz 原文无 PUA/U+FFFD 乱码，pua=0/repl=0）—— 接入时该类路由须先做文本层质量复检，否则文本页被误送去 OCR 失去速度优势 |
+| 表格质量 | **明显优于现状**：首页 8 列表格列对齐正确；pdfmux+pdfplumber 同表**结构散架**（表头错、列内容错位重复） |
+| 内容覆盖 | 完整（后段产品型号全有）；现状 pdfmux 输出**系统性 2.4× 膨胀**（合并单元格重复展开 + 页眉计入，"航天电器"×44） |
+| 速度 | 纯提取 ~2.3s/15页（0.15s/页，剥离 detect 后）vs pdfmux 管线 45.1s/15页（3.0s/页）→ **约 20 倍**；但 `detect_pdf` 每次调用隐含全书扫描 15.8s，须自行缓存 |
+| 小瑕疵 | pdf-inspector 输出末尾一处乱码标题（`### ????`） |
+
+**结论：证实纸面判断（优先级 1）** —— 表格/速度/覆盖三项全胜现状，接入时注意：① 分类与 detect 结果缓存；② `suspected_garbled_text` 路由复检；③ 页眉页脚不提取（与现状输出口径有差异）。
+
 ### 实测脚本与数据（留痕）
 
 - `tests/bench_hybrid_latency_20260929.py` — Hybrid 单请求延迟分解
 - `tests/bench_unlimited_ocr_latency_20260929.py` — Unlimited 单页冒烟
 - `tests/bench_unlimited_batch_20260929.py` — 串行/并发批量测速
+- `tests/diff_q8_bf16_20260929.py` — Q8_0 vs BF16 逐页 diff（量化质量验证）
+- `tests/locate_sample_pages_20260929.py` / `tests/make_contact_sheet_20260929.py` — 样本页定位（扫描书视觉法）
+- `tests/gen_compare_html_20260929.py` / `tests/merge_unlimited_compare_20260929.py` — 四引擎并排对比页
+- `tests/bench_pdfinspector_20260929.py` / `tests/check_garbled_20260929.py` — pdf-inspector 分类/提取/garbled 核验
+- `tests/ocr_engine_visual_review_20260929_183735.md` — 四引擎视觉审查报告（子代理交叉验证产出）
 - `TEST_RESULTS/read-pdf-bench_20260929/`（ChatWorkspace）— JSON/MD/日志输出
 
 ## 待实测清单（2026-09-29）
 
-- [ ] pdf-inspector：`pip install` 后对现有文本层测试样本跑 `process_pdf`，比对 markdown 质量与耗时
-- [ ] pdf-inspector：Mixed 文档逐页路由结果人工核对
+- [x] pdf-inspector：`pip install` 后对现有文本层测试样本跑 `process_pdf`，比对 markdown 质量与耗时（质量/速度全胜现状，见实测记录）
+- [x] pdf-inspector：Mixed 文档逐页路由结果核对（扫描页准确；文本页 garbled 误报需复检）
 - [x] Unlimited-OCR 冒烟：llama.cpp BF16 跑通（替代 vLLM docker 路线），吞吐已测（1.38s/页串行、42.7 页/分 @16并发 np4）
-- [ ] Unlimited-OCR：与 PaddleOCR Hybrid 同样本对比（正文页 + **目录页 + 分栏页**分组统计，弱项专项）
+- [x] Unlimited-OCR：与四引擎同样本对比（目录页/分栏页/表格公式页专项）——**GLM 综合第一，Unlimited 非质量最优**
+- [x] Unlimited-OCR：性能优化（Q8_0 量化实验，质量否决保持 BF16）
 - [ ] Unlimited-OCR：raw label 后处理策略 PoC（`<|det|>` 标签被 server 过滤，需补包装）
 - [ ] HF `config.json` 核实实际参数量（官方口径 3B/4B/MoE 不一）
 - [ ] Unlimited-OCR 集成进 engine_config（现为手动起服务，端口 12338）
+- [ ] pdf-inspector 接入文本层路径（分类缓存 + garbled 路由复检 + 页眉口径对齐）
