@@ -8,6 +8,8 @@ engine_config.local.yaml
 engine_config.yaml
 
 # 本地测试产物（目录；bench_*.py 脚本保留提交）
+# 仓库根下的 *_output/：以仓库为工作目录直接跑 extract_pdf.py 时会生成
+/*_output/
 tests/*_output/
 tests/all_tests/
 tests/bench/

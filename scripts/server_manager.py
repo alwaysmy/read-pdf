@@ -132,7 +132,7 @@ def _warn_no_device(name, exe_path, probe_out):
     toolkit = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
     vers = sorted(os.listdir(toolkit)) if os.path.isdir(toolkit) else []
     print(
-        f"[server_manager] 引擎 '{name}' 配置了 GPU（-ngl），但 llama.cpp 没有可用设备，"
+        f"[server_manager] 引擎 '{name}' 配置了 GPU（-ngl），但 llama.cpp 没有可用的 CUDA 设备，"
         f"将【静默在 CPU 上运行】——慢数倍且无任何报错。\n"
         f"  llama-server --list-devices 输出：\n"
         + "".join(f"      {l}\n" for l in probe_out.strip().splitlines()[:6]) +
