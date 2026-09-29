@@ -215,6 +215,26 @@ Timing 分解（单请求，np4）：prompt eval 647ms/908tok（1402 tok/s）、
 
 **结论：证实纸面判断（优先级 1）** —— 表格/速度/覆盖三项全胜现状，接入时注意：① 分类与 detect 结果缓存；② `suspected_garbled_text` 路由复检；③ 页眉页脚不提取（与现状输出口径有差异）。
 
+### pdf-inspector 多样本矩阵测试（2026-09-30，12 样本，全 CPU）
+
+样本覆盖 9 类：电子发票、离职证明表单、datasheet×2（双栏）、Xilinx PG054 英文、SCPI 中文手册、中文校准报告、Wireshark 教程、CAD 图纸、ITECH 英文说明书、扫描书、扫描信件。脚本 `tests/bench_pdf_matrix_20260930.py`，数据 `TEST_RESULTS/read-pdf-bench_20260930/pdf_matrix_*.json`。
+
+| 维度 | pdf-inspector | 现状管线（pdfmux+pymupdf+pdfplumber） | 判定 |
+|---|---|---|---|
+| 分类 | 12/12 正确（9 text_based / 2 scanned / 1 image_based），耗时 0-0.13s | 无此能力 | PI 胜；连接器手册 garbled 误报今早 0 例（**个案而非普遍**） |
+| 速度（前 10 页） | **process 4-240ms** | 3.4-53.9s（Wireshark 53.9s、扫描书 48.9s） | **PI 快 1-3 个数量级** |
+| 常规正文覆盖 | 96-102%（相对 fitz 文本层），9/10 关键短语与现状并列命中 | 9/10 | 平手偏 PI |
+| 表格（拉线表） | datasheet 161 行 / SCPI 77 行 / 报告 66 行 | pdfplumber 同页 **0 表** / 1 / 6 | PI 明显强（pdfplumber 拉线表大量漏） |
+| **非常规文本层** | **发票、离职证明表单、CAD 图纸 → markdown 空输出且无任何告警**（11ms 空手而归） | 分别出 1883 / 1009 / 1986 bytes（fitz 底数 343/192/995ch） | **现状胜，PI 硬伤** |
+| 表格噪声 | 双栏 datasheet 有 4 行正文被误包进表格（过度表格化） | 正文干净但表格漏 | 各有瑕疵 |
+
+**回答"是否直接替换 pdfmux"**：
+1. **接口同形状但非换函数** —— 现状输出是三段拼接（`<!-- PDFMUX OUTPUT -->` 结构化段 + pymupdf `<!-- PAGE n -->` 分页段 + pdfplumber `[TABLES]` 段），下游依赖分页标记。正确替换姿势 = 用 PI 的 `pages` 参数逐页提取拼 `<!-- PAGE n -->`，整体替代三段。
+2. **非无脑全替** —— 三类反例（发票/表单/CAD）证明必须加**守门回退**：markdown 为空或覆盖率低于阈值（对照 fitz 快速底数）→ 回退现有 pymupdf 路径。PI 空输出静默无告警是接入时最大的坑。
+3. 综合定位：**PI 作主提取器 + 分类路由 + 空输出回退**，而非全面替代；拉线表格场景 PI 显著补短板。
+
+**本轮仍未覆盖**（"各种 PDF"的边界）：加密 PDF、LaTeX 双栏论文、跨页续表书籍、双语混排、旋转页、千页级大书 —— 如需穷尽可第二批补测。
+
 ### 实测脚本与数据（留痕）
 
 - `tests/bench_hybrid_latency_20260929.py` — Hybrid 单请求延迟分解
@@ -224,6 +244,8 @@ Timing 分解（单请求，np4）：prompt eval 647ms/908tok（1402 tok/s）、
 - `tests/locate_sample_pages_20260929.py` / `tests/make_contact_sheet_20260929.py` — 样本页定位（扫描书视觉法）
 - `tests/gen_compare_html_20260929.py` / `tests/merge_unlimited_compare_20260929.py` — 四引擎并排对比页
 - `tests/bench_pdfinspector_20260929.py` / `tests/check_garbled_20260929.py` — pdf-inspector 分类/提取/garbled 核验
+- `tests/bench_pdf_matrix_20260930.py` / `tests/show_matrix_20260930.py` / `tests/spotcheck_datasheet_20260930.py` / `tests/phrase_check_20260930.py` — 12 样本矩阵测试与抽查
+- `TEST_RESULTS/read-pdf-bench_20260930/` — 矩阵 JSON + 各样本 PI/管线输出
 - `tests/ocr_engine_visual_review_20260929_183735.md` — 四引擎视觉审查报告（子代理交叉验证产出）
 - `TEST_RESULTS/read-pdf-bench_20260929/`（ChatWorkspace）— JSON/MD/日志输出
 
