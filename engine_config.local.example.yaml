@@ -22,7 +22,13 @@ defaults:
   # ocr_ov_dir: ""             # OpenVINO 模型目录；留空用仓库内 models/
 
 engines:
-  hybrid:                      # Paddle 版面检测 + PaddleOCR-VL GGUF（llama.cpp）
+  hybrid:                      # 版面检测 + 识别后端（识别后端见下方 recognizer）
+    recognizer:
+      # backend: "auto"        # llama-cpp | openvino | paddle | auto
+      # candidates: ["llama-cpp", "openvino", "paddle"]   # 仅 auto 时生效
+      #   有 GPU（空闲显存够）→ auto 会选 llama-cpp；
+      #   无强 GPU + Intel     → 建议显式写 openvino；
+      #   其它                 → 建议显式写 paddle（走 defaults.ocr_device）
     sources:
       local:
         server:

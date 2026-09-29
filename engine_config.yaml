@@ -24,12 +24,16 @@ server:                     # 本体 HTTP 服务（server.py / mcp_server.py 默
   port: 8123                # 撞端口可改（engine_config.local.yaml 覆盖）
 
 engines:
-  hybrid:                 # PaddleOCR Hybrid — 图像 PDF 默认（质量最稳）
+  hybrid:                 # PaddleOCR Hybrid — 版面检测 + 识别后端（图像 PDF 默认）
     default_source: local      # 默认服务源：local | cloud
     prompt: ""                 # 引擎行为（两源共用，不随源变）
     max_tokens: 4096
     message_order: image-first
     output_format: markdown    # text|markdown|html
+    recognizer:                # 识别后端 —— 版面检测固定 PP-DocLayoutV3，与后端无关
+      backend: "auto"          # llama-cpp（VL GGUF，需显存）| openvino | paddle（PP-OCRv6）| auto
+                               # 固定值时【不探测、不回退】：失败即报错，避免静默换算法
+      candidates: ["llama-cpp", "openvino", "paddle"]   # 仅 backend=auto 时按此顺序探测
     sources:
       local:                   # 本地源：llama-server 服务
         endpoint: "http://127.0.0.1:12336/v1"

@@ -121,7 +121,16 @@ def _qwen_postprocess(text):
 
 
 def extract_hybrid(img_path, source=None):
-    """PaddleOCR Hybrid — Python layout detection + GGUF VL, structured blocks."""
+    """PaddleOCR Hybrid：版面检测 + 识别后端，后端由 engines.hybrid.recognizer.backend 决定.
+
+    - `llama-cpp` → PaddleOCR-VL GGUF（经 llama-server，需显存）
+    - `openvino` / `paddle` → PP-OCRv6（进程内，无需显存、无需服务）
+
+    版面检测在阶段2 接入 ppocrv6 分支；当前该分支先输出纯文本行。
+    """
+    rec = _resolve_hybrid_recognizer()
+    if rec["backend"] != "llama-cpp":
+        return _hybrid_ppocrv6(img_path, rec)
     try:
         from paddleocr import PaddleOCRVL
         import engines as _eng
@@ -159,7 +168,8 @@ def extract_hybrid(img_path, source=None):
                 else:
                     blocks.append(f'{content} <!-- {bbox_str} -->')
         text = '\n\n'.join(blocks)
-        return text, {}
+        return text, {"recognizer": {"backend": "llama-cpp", "selection_mode": rec.get("selection_mode"),
+                                     "fallback_from": rec.get("fallback_from") or []}}
     except Exception as e:
         return "", {"error": str(e)}
 
@@ -294,12 +304,16 @@ def _ov_paddle(dev):
     )
 
 
-def _ov_ensure():
-    """Lazy-load --ov 后端（进程内，不需要 llama-server）；失败时逐级降级."""
+def _ov_ensure(backend=None):
+    """Lazy-load --ov 后端（进程内，不需要 llama-server）；失败时逐级降级.
+
+    backend 用于 hybrid 的识别后端：可显式指定 openvino / gpu / cpu；
+    缺省时按配置解析（_ov_backend）。
+    """
     global _OV
     if _OV:
         return _OV
-    backend = _ov_backend()
+    backend = backend or _ov_backend()
     print(f"[ov] 后端: {backend}", flush=True)
     if backend == "openvino":
         try:
@@ -341,15 +355,8 @@ def _ov_via_openvino(ov, img_path):
     return "\n".join(r["text"] for r in kept).replace("\ufffd", " "), stats
 
 
-def extract_ov(img_path, source=None):
-    """本地 OCR 引擎：官方 PP-OCRv6（det+rec，纯文本行，无版面/VL；不需要 llama-server）.
-
-    后端由 _ov_backend() 按配置决定（不做隐式择优）：paddle-gpu ≈2.0s /
-    OpenVINO CPU ≈4.6s / paddle-cpu ≈35s（整页 A4 密排，本机实测）。
-    """
-    ov = _ov_ensure()
-    if ov["kind"] == "openvino":
-        return _ov_via_openvino(ov, img_path)
+def _ov_via_paddle(ov, img_path):
+    """paddle 后端推理（PP-OCRv6 det+rec）."""
     result = next(iter(ov["ocr"].predict(str(img_path))), None)
     if result is None:
         return "", {"error": "paddle predict returned nothing"}
@@ -361,6 +368,147 @@ def extract_ov(img_path, source=None):
         s = np.array(scores, dtype=float)
         stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
     return "\n".join(t.replace("\ufffd", " ") for t in texts), stats
+
+
+def extract_ov(img_path, source=None):
+    """本地 OCR 引擎：官方 PP-OCRv6（det+rec，纯文本行，无版面/VL；不需要 llama-server）.
+
+    后端由 _ov_backend() 按配置决定（不做隐式择优）：paddle-gpu ≈2.0s /
+    OpenVINO CPU ≈4.6s / paddle-cpu ≈35s（整页 A4 密排，本机实测）。
+    """
+    ov = _ov_ensure()
+    if ov["kind"] == "openvino":
+        return _ov_via_openvino(ov, img_path)
+    return _ov_via_paddle(ov, img_path)
+
+
+# ---------------------------------------------------------------------------
+# hybrid 的识别后端：版面检测固定（PP-DocLayoutV3），识别后端按配置选择
+# ---------------------------------------------------------------------------
+_HYBRID_BACKENDS = ("llama-cpp", "openvino", "paddle")
+_HYBRID_DEFAULT_CANDIDATES = ("llama-cpp", "openvino", "paddle")
+
+
+def _hybrid_cfg():
+    """hybrid 的 recognizer 配置段（未配置时返回空，由调用方用默认值）."""
+    try:
+        from engines import get_engine
+        eng, _ = get_engine("hybrid")
+        return eng.get("recognizer") or {}
+    except Exception:
+        return {}
+
+
+def _probe_llama_cpp():
+    """llama-cpp 后端能力探测：llama-server + 模型/投影文件 + 空闲显存达标.
+
+    只探测，不启动服务、不加载模型。
+    """
+    try:
+        from engines import get_engine, load_config
+        import server_manager
+        llama_dir = (load_config().get("defaults") or {}).get("llama_dir") or ""
+        eng, src = get_engine("hybrid")
+        srv = ((eng.get("sources") or {}).get(src) or {}).get("server") or {}
+        exe = srv.get("exe", "llama-server.exe")
+        exe_path = os.path.join(llama_dir, exe) if llama_dir and not os.path.isabs(exe) else exe
+        if not os.path.exists(exe_path):
+            return False, f"llama-server 不存在：{exe_path}"
+        for k in ("model", "mmproj"):
+            p = str(srv.get(k) or "").strip()
+            if not p or not os.path.exists(p):
+                return False, f"{k} 未配置或不存在"
+        need = int(srv.get("vram_required_mib", 3000))
+        free = server_manager._query_free_vram_mib()
+        if free is not None and free < need:
+            return False, f"空闲显存 {free} MiB < 需要 {need} MiB"
+        return True, "ok"
+    except Exception as e:
+        return False, f"探测异常：{e}"
+
+
+def _probe_openvino():
+    if _ov_openvino_ready():
+        return True, "ok"
+    return False, "openvino 包或模型缺失"
+
+
+def _probe_paddle():
+    try:
+        import paddleocr  # noqa: F401
+        return True, "ok"
+    except Exception as e:
+        return False, f"paddleocr 不可用：{e}"
+
+
+_HYBRID_PROBES = {"llama-cpp": _probe_llama_cpp, "openvino": _probe_openvino,
+                  "paddle": _probe_paddle}
+
+_HYBRID_REC = None
+
+
+def _resolve_hybrid_recognizer(force=False):
+    """解析 hybrid 实际生效的识别后端（配置驱动，不做隐式择优；进程内记忆）.
+
+    - `recognizer.backend: llama-cpp | openvino | paddle` → 固定用它，**不探测、不回退**。
+      失败即报错：静默换后端会改变识别算法与结果语义，比直接失败更危险。
+    - `recognizer.backend: auto`（缺省）→ 按 `recognizer.candidates` 顺序做能力探测，
+      取第一个可用者，并把探测失败项记进 `fallback_from` 供 metadata 追溯。
+    """
+    global _HYBRID_REC
+    if _HYBRID_REC is not None and not force:
+        return _HYBRID_REC
+    cfg = _hybrid_cfg()
+    backend = str(cfg.get("backend") or "auto").strip().lower()
+    if backend in _HYBRID_BACKENDS:
+        _HYBRID_REC = {"backend": backend, "selection_mode": "fixed", "fallback_from": []}
+        return _HYBRID_REC
+    cands = [str(c).strip().lower() for c in (cfg.get("candidates") or _HYBRID_DEFAULT_CANDIDATES)]
+    cands = [c for c in cands if c in _HYBRID_BACKENDS] or list(_HYBRID_DEFAULT_CANDIDATES)
+    fallback_from = []
+    for c in cands:
+        ok, reason = _HYBRID_PROBES[c]()
+        if ok:
+            _HYBRID_REC = {"backend": c, "selection_mode": "auto",
+                           "fallback_from": fallback_from, "reason": reason}
+            return _HYBRID_REC
+        fallback_from.append({"backend": c, "reason": reason})
+    print(f"[hybrid] 候选识别后端全部探测失败 {cands}，回退 paddle", flush=True)
+    _HYBRID_REC = {"backend": "paddle", "selection_mode": "auto",
+                   "fallback_from": fallback_from, "reason": "所有候选不可用"}
+    return _HYBRID_REC
+
+
+def _ensure_hybrid_server():
+    """只有解析出的识别后端是 llama-cpp 时才需要本地 llama-server.
+
+    这是"hybrid 被 GPU 实现绑架"的直接来源：原来默认路径无条件 ensure_server("hybrid")，
+    于是没有 3.5GB 空闲显存的机器上，任何扫描件都必然失败。
+    """
+    rec = _resolve_hybrid_recognizer()
+    if rec["backend"] == "llama-cpp":
+        ensure_server("hybrid")
+    else:
+        print(f"[hybrid] 识别后端: {rec['backend']}"
+              f"（{rec.get('selection_mode')}）—— 不需要 llama-server", flush=True)
+    return rec
+
+
+def _hybrid_ppocrv6(img_path, rec):
+    """hybrid 的 PP-OCRv6 识别后端：复用 --ov 的运行时（paddle-gpu / paddle-cpu / OpenVINO）."""
+    if rec["backend"] == "openvino":
+        backend = "openvino"
+    else:
+        backend = "gpu" if str(_ov_config().get("ocr_device") or "cpu").lower() == "gpu" else "cpu"
+    ov = _ov_ensure(backend)
+    if ov["kind"] == "openvino":
+        text, stats = _ov_via_openvino(ov, img_path)
+    else:
+        text, stats = _ov_via_paddle(ov, img_path)
+    stats["recognizer"] = {"backend": rec["backend"],
+                           "selection_mode": rec.get("selection_mode"),
+                           "fallback_from": rec.get("fallback_from") or []}
+    return text, stats
 
 
 def extract_pdfmux(pdf_path, pages=None):
@@ -518,8 +666,11 @@ def _engine_model_tag(engine):
 
 
 def _hybrid_recognizer():
-    """hybrid 实际生效的识别后端标识（阶段1 起由配置决定；当前固定 llama-cpp-server）."""
-    return {"backend": "llama-cpp", "model": _engine_model_tag("hybrid")}
+    """hybrid 实际生效的识别后端标识 —— 供缓存指纹用（换后端必须让缓存失效）."""
+    rec = _resolve_hybrid_recognizer()
+    if rec["backend"] == "llama-cpp":
+        return {"backend": rec["backend"], "model": _engine_model_tag("hybrid")}
+    return {"backend": rec["backend"], "model": f"PP-OCRv6-{_ov_tier()}"}
 
 
 def _pipeline_signature(engine, dpi, source):
@@ -687,7 +838,7 @@ def main():
         ensure_server("qwen")
     elif args.hybrid:
         engine = "hybrid"
-        ensure_server("hybrid")  # PaddleOCR GGUF server needed for hybrid VL (config-driven)
+        _ensure_hybrid_server()  # 仅当识别后端解析为 llama-cpp 时才需要 llama-server
     elif args.vl:
         engine = "vl"
         print("Engine: PaddleOCRVL (native, ~84s/page)", flush=True)
@@ -703,8 +854,8 @@ def main():
     elif args.ov:
         engine = "ov"  # 本地 PP-OCRv6，无需 ensure_server
     elif use_ocr:
-        engine = "hybrid"  # default: PaddleOCR Hybrid (layout + GGUF VL)
-        ensure_server("hybrid")
+        engine = "hybrid"  # 默认：hybrid（版面检测 + 识别后端，后端按配置解析）
+        _ensure_hybrid_server()
     else:
         engine = "text"
 
@@ -1006,6 +1157,8 @@ def main():
                     page_info["error"] = stats["error"]
                 if stats.get("cache"):
                     page_info["cache"] = "hit"
+                if stats.get("recognizer"):
+                    page_info["recognizer"] = stats["recognizer"]
                 pages_data.append(page_info)
 
             progress = (i + len(batch)) * 100 // requested_pages
