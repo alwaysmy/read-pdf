@@ -190,6 +190,65 @@ def _query_free_vram_mib():
         return None
 
 
+def _query_used_vram_mib():
+    """查询 GPU 已用显存（MiB）。无 GPU/失败返回 None.
+
+    用**全卡已用**而不是逐进程占用：Windows/WDDM 下 `--query-compute-apps` 的
+    used_memory 常返回 N/A，逐进程数据不可用。
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, timeout=10)
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.decode(errors="ignore").strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+def _model_size_mib(server_cfg):
+    """模型文件（model + mmproj）合计大小（MiB），用于判断 offload 是否大致到位."""
+    total = 0.0
+    for key in ("model", "mmproj"):
+        p = server_cfg.get(key)
+        if p and os.path.exists(p):
+            total += os.path.getsize(p) / (1024 * 1024)
+    return total
+
+
+def _verify_gpu_offload(name, vram_before, server_cfg):
+    """启动后核对模型是否真的卸载进了显存.
+
+    `--list-devices` 只能证明**设备存在**，证明不了**模型被卸载上去了**：显存不足、
+    `--fit` 策略或参数问题都可能让 llama.cpp 只卸载一部分甚至一层都不卸，此时设备列表
+    照样正常、日志也照样干净，而速度接近 CPU。用"启动前后全卡已用显存的增量"判断——
+    完全卸载时增量应接近模型文件大小，明显偏小即说明没卸载到位。
+    """
+    if vram_before is None:
+        return
+    need = _model_size_mib(server_cfg)
+    if need <= 0:
+        return
+    after = _query_used_vram_mib()
+    if after is None:
+        return
+    delta = after - vram_before
+    # 阈值取模型大小的 0.8：完全卸载时增量≈模型大小（实测 1771/1733 = 102%），
+    # 只卸载一部分会明显低于它。0.5 太松——实测半卸载（893/1733 = 52%）会被漏报
+    if delta >= need * 0.8:
+        print(f"[server_manager] {name} 模型已卸载到 GPU（显存 +{delta:.0f} MiB / 模型 {need:.0f} MiB）", flush=True)
+        return
+    print(
+        f"[server_manager] 引擎 '{name}' 的模型可能没有真正卸载到 GPU：\n"
+        f"  模型合计 ≈ {need:.0f} MiB，但启动前后全卡已用显存只增加了 {delta:.0f} MiB。\n"
+        f"  → **设备存在不等于模型被卸载**：显存不足、--fit 策略或参数问题都可能只卸载一部分，\n"
+        f"    此时 --list-devices 正常、日志干净，但速度接近 CPU。\n"
+        f"  → 处理：让空闲显存 ≥ 模型大小 + KV 占用（关掉占用显存的程序）；确认 -ngl 值足够大；\n"
+        f"    若模型本身放不下该卡，考虑降 -c 或改用更小的模型/后端。",
+        flush=True)
+
+
 def _resolve_device(cfg, name):
     """Resolve effective device with GPU fallback. Returns (device, warned)."""
     device = cfg.get("defaults", {}).get("device", "gpu")
@@ -311,6 +370,8 @@ def start(name, server_cfg):
     proc_env = os.environ.copy()
     if server_cfg.get("env"):
         proc_env.update(server_cfg["env"])
+    # 记录启动前的显存基线，供就绪后核对 offload 是否真的发生
+    _vram_before = _query_used_vram_mib() if _wants_gpu(server_cfg.get("args", [])) else None
     # stdout 也要收进日志：llama.cpp 的设备列表、"offloaded N layers to GPU"、
     # 逐请求 token 速率全在 stdout，丢掉它等于丢掉了 GPU 是否生效的唯一直接证据
     proc = subprocess.Popen(args, stdout=_err_file, stderr=subprocess.STDOUT, env=proc_env)
@@ -361,6 +422,7 @@ def start(name, server_cfg):
             r = _req.get(f"http://127.0.0.1:{port}/health", timeout=2)
             if r.status_code == 200:
                 print(f"[server_manager] {name} 就绪 (port {port})", flush=True)
+                _verify_gpu_offload(name, _vram_before, server_cfg)
                 return proc
         except Exception:
             pass
