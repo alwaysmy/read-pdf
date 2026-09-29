@@ -222,3 +222,4 @@ python scripts/extract_pdf.py 你的扫描PDF.pdf --layout --pages 1-3
 | 无 GPU 却配了 gpu | 自动告警回退 cpu；想禁用回退设 `gpu_fallback: false` |
 | 云源 401 / api_key 未配置 | 在 `engine_config.local.yaml` 填 hybrid / paddle_vl 的 cloud api_key |
 | huggingface 下载慢/失败 | 用 hf-mirror.com 镜像 |
+| 引擎明显变慢、`nvidia-smi` 利用率 0% | llama.cpp CUDA build 缺 `cublas64_13.dll`（CUDA Toolkit 的 `bin\x64` 不在 PATH）时**静默 CPU 回退**。把 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\bin\x64` 加入 PATH 后重启引擎；验证：启动日志 `device_info` 应列出 CUDA0 而非仅 CPU（2026-09-29 实测：CPU 回退 10.74s/页 → GPU 0.9s/页） |
