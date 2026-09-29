@@ -5,7 +5,7 @@ PDF 提取 skill：文本层提取（pdfmux + pdfplumber）→ OCR 引擎（Padd
 ## 功能
 
 - **文本 PDF**：pdfmux + pdfplumber 双引擎（~0.85s/页）
-- **图像 PDF（默认）**：PaddleOCR Hybrid（版面检测 + VL 识别，~2.5s/页）
+- **图像 PDF（默认）**：PaddleOCR Hybrid（版面检测 + 识别后端；**后端由配置决定**，见下表下方说明）
 - **备选 OCR**：GLM-OCR（公式/数值表格保真）、DeepSeek-OCR（纯文本扫描件提速 ~45%）
 - **版面分析**：`--layout` 定位表格/示意图 → 裁剪存图 + 布局 JSON（PP-DocLayoutV3，GPU 0.06s/页）
 - **抽取缓存**：默认开启，二次处理免 OCR（0.0s）
@@ -69,6 +69,20 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | PaddleOCR Hybrid | ~2.5s | ✅ 最好 | 图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
+
+**Hybrid = 版面检测 + 识别后端**，版面固定用 PP-DocLayoutV3，识别后端由
+`engines.hybrid.recognizer.backend` 决定：
+
+| backend | 识别 | 前置条件 |
+|---|---|---|
+| `llama-cpp` | PaddleOCR-VL GGUF（经 llama-server） | 空闲显存 ≥ 3.5GB |
+| `openvino` / `paddle` | PP-OCRv6（进程内） | 无（`openvino` 需装 `requirements-ov.txt`） |
+| `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — |
+
+**GPU 不是 hybrid 的前提**——那只是历史上先实现了的后端。没有强 GPU 的机器把
+`backend` 设为 `openvino`（Intel）或 `paddle`，或保持 `auto` 让它落到可用者；
+固定值时失败即报错、不会静默换后端。实际生效的后端在结果 `recognizer` 字段里
+（含 `fallback_from`，记录 auto 跳过了哪些及其原因）。
 | ov（本地轻量） | 见下（后端自动择优） | ⚠️ 一般（纯文本行） | 无 GPU/llama-server 场景 |
 | 云 PaddleOCR-VL-1.6 | ~9.3s | ✅ 与本地同 | 无 GPU 兜底 |
 

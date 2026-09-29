@@ -339,35 +339,77 @@ def _ov_ensure(backend=None):
 _OV_REC_SCORE_THRESH = 0.5
 
 
-def _ov_via_openvino(ov, img_path):
-    """OpenVINO 后端推理：逐行输出，不做行合并（与 PaddleOCR 的 rec_texts 口径一致）."""
+def _bbox_of_poly(poly):
+    """四点/多边形 → 轴对齐 [x0,y0,x1,y1]."""
+    xs = [float(p[0]) for p in poly]
+    ys = [float(p[1]) for p in poly]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _ov_lines_openvino(ov, img_path):
+    """OpenVINO 后端：返回行级结果 [{text, poly, bbox, conf}]（已按阈值过滤）.
+
+    返回 (lines, stats)；lines 为 None 表示读取失败。
+    """
     po, cv2 = ov["po"], ov["cv2"]
     img = cv2.imread(str(img_path))
     if img is None:
-        return "", {"error": f"cannot read image {img_path}"}
+        return None, {"error": f"cannot read image {img_path}"}
     rows = po.ocr_image(img, ov["det"], ov["rec"], None, ov["chars"], ov["cfg"], rotate=False)
     kept = [r for r in rows if r["conf"] >= _OV_REC_SCORE_THRESH]
+    lines = []
+    for r in kept:
+        poly = r.get("box")
+        lines.append({"text": r["text"].replace("\ufffd", " "), "poly": poly,
+                      "bbox": _bbox_of_poly(poly) if poly else None, "conf": r["conf"]})
     stats = {"engine": "ov-openvino", "lines_raw": len(rows), "lines_kept": len(kept)}
-    if kept:
+    if lines:
         import numpy as np
-        s = np.array([r["conf"] for r in kept])
+        s = np.array([l["conf"] for l in lines])
         stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
-    return "\n".join(r["text"] for r in kept).replace("\ufffd", " "), stats
+    return lines, stats
 
 
-def _ov_via_paddle(ov, img_path):
-    """paddle 后端推理（PP-OCRv6 det+rec）."""
+def _ov_via_openvino(ov, img_path):
+    """OpenVINO 后端推理：逐行输出，不做行合并（与 PaddleOCR 的 rec_texts 口径一致）."""
+    lines, stats = _ov_lines_openvino(ov, img_path)
+    if lines is None:
+        return "", stats
+    return "\n".join(l["text"] for l in lines), stats
+
+
+def _ov_lines_paddle(ov, img_path):
+    """paddle 后端：返回行级结果 [{text, poly, bbox, conf}]（用 rec_boxes / rec_polys）."""
     result = next(iter(ov["ocr"].predict(str(img_path))), None)
     if result is None:
-        return "", {"error": "paddle predict returned nothing"}
+        return None, {"error": "paddle predict returned nothing"}
     texts = list(result.get("rec_texts") or [])
     scores = list(result.get("rec_scores") or [])
+    boxes = list(result.get("rec_boxes") or [])
+    polys = list(result.get("rec_polys") or [])
+    lines = []
+    for i, t in enumerate(texts):
+        box = None
+        if i < len(boxes) and boxes[i] is not None and len(boxes[i]) == 4:
+            box = [float(v) for v in boxes[i]]
+        elif i < len(polys) and polys[i] is not None and len(polys[i]):
+            box = _bbox_of_poly(polys[i])
+        lines.append({"text": str(t).replace("\ufffd", " "), "poly": None, "bbox": box,
+                      "conf": float(scores[i]) if i < len(scores) else None})
     stats = {"engine": "paddle-v6", "tier": _ov_tier(), "device": ov.get("device", "cpu")}
     if scores:
         import numpy as np
         s = np.array(scores, dtype=float)
         stats["confidence"] = {"mean": round(float(s.mean()), 2), "min": round(float(s.min()), 2)}
-    return "\n".join(t.replace("\ufffd", " ") for t in texts), stats
+    return lines, stats
+
+
+def _ov_via_paddle(ov, img_path):
+    """paddle 后端推理：纯文本行输出（不做版面归块）."""
+    lines, stats = _ov_lines_paddle(ov, img_path)
+    if lines is None:
+        return "", stats
+    return "\n".join(l["text"] for l in lines), stats
 
 
 def extract_ov(img_path, source=None):
@@ -494,20 +536,175 @@ def _ensure_hybrid_server():
     return rec
 
 
+# ---------------------------------------------------------------------------
+# 版面归块与阅读顺序（hybrid 的"版面"那一半）
+# ---------------------------------------------------------------------------
+_ORPHAN_OVERLAP = 0.7       # 行 bbox 落在块内的面积占比阈值
+_FULL_WIDTH_RATIO = 0.7     # 宽 ≥ 页宽此比例 → 通栏块（分栏边界）
+_HEADING_LEVEL = {"doc_title": "#", "title": "##", "header": "###"}
+_FIGURE_LABELS = {"figure", "image", "chart", "seal", "stamp"}
+
+
+def _layout_device():
+    """版面检测设备：defaults.layout_device（默认 cpu —— GPU 通常被 OCR 占用）."""
+    return str(_ov_config().get("layout_device") or "cpu").strip().lower()
+
+
+def _overlap_ratio(line_bbox, block_bbox):
+    """行 bbox 落在块 bbox 内的面积占比（分母是【行】面积）."""
+    if not line_bbox:
+        return 0.0
+    lx0, ly0, lx1, ly1 = line_bbox
+    bx0, by0, bx1, by1 = block_bbox
+    ix = max(0.0, min(lx1, bx1) - max(lx0, bx0))
+    iy = max(0.0, min(ly1, by1) - max(ly0, by0))
+    return ix * iy / max(1e-6, (lx1 - lx0) * (ly1 - ly0))
+
+
+def _line_sort_key(line):
+    bb = line.get("bbox") or [0, 0, 0, 0]
+    return (bb[1], bb[0])
+
+
+def _assign_lines_to_blocks(lines, blocks):
+    """按 overlap 占比归块；不足阈值（或无坐标）的进 orphans.
+
+    用占比而不是"行中心点落在哪个框内"：窄长文本行的中心点法极易误归。也不逐块裁剪
+    识别——layout bbox 不是 OCR-safe crop bbox（常贴边），直接裁会切坏首尾字符/上下标。
+    """
+    by_idx = {i: [] for i in range(len(blocks))}
+    orphans = []
+    for ln in lines:
+        best_i, best_r = None, 0.0
+        for i, b in enumerate(blocks):
+            r = _overlap_ratio(ln.get("bbox"), b["bbox"])
+            if r > best_r:
+                best_i, best_r = i, r
+        if best_i is not None and best_r >= _ORPHAN_OVERLAP:
+            by_idx[best_i].append(ln)
+        else:
+            orphans.append(ln)
+    return by_idx, orphans
+
+
+def _cluster_columns(blocks):
+    """把块按横向重叠聚成栏（贪心：与已有栏重叠超块宽一半即并入）."""
+    cols = []
+    for b in sorted(blocks, key=lambda x: x["bbox"][0]):
+        x0, x1 = b["bbox"][0], b["bbox"][2]
+        for c in cols:
+            if min(x1, c[1]) - max(x0, c[0]) > 0.5 * max(1, x1 - x0):
+                c[0], c[1] = min(c[0], x0), max(c[1], x1)
+                c[2].append(b)
+                break
+        else:
+            cols.append([x0, x1, [b]])
+    cols.sort(key=lambda c: c[0])
+    return cols
+
+
+def _reading_order(blocks, page_w):
+    """阅读顺序：单栏按 (y,x)；多栏按【先分栏、栏内自上而下】，通栏块作为分段边界.
+
+    复杂度刻意保持低——更复杂的版式（嵌套栏、XY-cut）等实际遇到再上。
+    """
+    if not blocks:
+        return []
+    full = [b for b in blocks if (b["bbox"][2] - b["bbox"][0]) >= _FULL_WIDTH_RATIO * page_w]
+    full_ids = {id(b) for b in full}
+    others = [b for b in blocks if id(b) not in full_ids]
+    if not full:
+        out = []
+        for c in _cluster_columns(others):
+            out += sorted(c[2], key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        return out
+    full_s = sorted(full, key=lambda b: b["bbox"][1])
+    segments = [[] for _ in range(len(full_s) + 1)]
+    for b in others:
+        segments[sum(1 for f in full_s if f["bbox"][1] < b["bbox"][1])].append(b)
+    out = []
+    for c in _cluster_columns(segments[0]):
+        out += sorted(c[2], key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    for i, f in enumerate(full_s):
+        out.append(f)
+        for c in _cluster_columns(segments[i + 1]):
+            out += sorted(c[2], key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    return out
+
+
+def _render_markdown(ordered, by_idx, orphans):
+    """按阅读顺序渲染 markdown.
+
+    表格块【不伪造】markdown 表：没有 table parser 时保留块内文本（按 y,x）并明确标注
+    结构未知——伪造一张并不存在的表比留白更糟。
+    """
+    parts = []
+    for b in ordered:
+        label = b.get("label", "text")
+        bb = b["bbox"]
+        text = "\n".join(l["text"] for l in sorted(by_idx.get(b["_idx"], []), key=_line_sort_key))
+        if label == "table":
+            parts.append(f"<!-- table structure unavailable (bbox={bb}) -->")
+            if text:
+                parts.append(text)
+        elif label in _FIGURE_LABELS:
+            parts.append(f"<!-- {label} bbox={bb} -->")
+            if text:
+                parts.append(text)
+        elif label == "formula":
+            parts.append(f"$$\n{text}\n$$" if text else f"<!-- formula bbox={bb} -->")
+        elif label in _HEADING_LEVEL:
+            if text:
+                parts.append(f"{_HEADING_LEVEL[label]} {text}")
+        elif text:
+            parts.append(text)
+    if orphans:
+        parts.append("<!-- orphan-lines: 未达归块阈值，按 (y,x) 附于末尾 -->")
+        parts.append("\n".join(l["text"] for l in sorted(orphans, key=_line_sort_key)))
+    return "\n\n".join(p for p in parts if p and p.strip())
+
+
+def _merge_lines_with_layout(lines, blocks, img_path):
+    """整页 OCR 的行 + 版面块 → 结构化 markdown."""
+    for i, b in enumerate(blocks):
+        b["_idx"] = i
+    try:
+        from PIL import Image
+        with Image.open(img_path) as im:
+            page_w = im.size[0]
+    except Exception:
+        page_w = max((b["bbox"][2] for b in blocks), default=1)
+    by_idx, orphans = _assign_lines_to_blocks(lines, blocks)
+    text = _render_markdown(_reading_order(blocks, page_w), by_idx, orphans)
+    return text, {"layout": {"status": "ok", "blocks": len(blocks), "orphans": len(orphans)}}
+
+
 def _hybrid_ppocrv6(img_path, rec):
-    """hybrid 的 PP-OCRv6 识别后端：复用 --ov 的运行时（paddle-gpu / paddle-cpu / OpenVINO）."""
+    """hybrid 的 PP-OCRv6 识别后端：版面检测（PP-DocLayoutV3）+ PP-OCRv6 识别 + 空间归块.
+
+    整页只做一次识别，再按坐标归块——不逐块裁剪识别（见 _assign_lines_to_blocks）。
+    """
     if rec["backend"] == "openvino":
         backend = "openvino"
     else:
         backend = "gpu" if str(_ov_config().get("ocr_device") or "cpu").lower() == "gpu" else "cpu"
     ov = _ov_ensure(backend)
     if ov["kind"] == "openvino":
-        text, stats = _ov_via_openvino(ov, img_path)
+        lines, stats = _ov_lines_openvino(ov, img_path)
     else:
-        text, stats = _ov_via_paddle(ov, img_path)
+        lines, stats = _ov_lines_paddle(ov, img_path)
     stats["recognizer"] = {"backend": rec["backend"],
                            "selection_mode": rec.get("selection_mode"),
                            "fallback_from": rec.get("fallback_from") or []}
+    if lines is None:
+        return "", stats
+    blocks, lerr = extract_layout(img_path, device=_layout_device())
+    if not blocks:
+        # 版面不可用 → 降级为纯文本行：损失的是结构信息，正文仍在
+        stats["layout"] = {"status": "unavailable", "error": (lerr or {}).get("error")}
+        return "\n".join(l["text"] for l in lines), stats
+    text, lstats = _merge_lines_with_layout(lines, blocks, img_path)
+    stats.update(lstats)
     return text, stats
 
 

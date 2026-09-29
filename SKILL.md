@@ -68,6 +68,8 @@ PDF 文件内印刷页码（"第 42 页"）可能与物理页码不一致（扉�
 
 PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏排版和公式。GLM-OCR 仅作为备用引擎。
 
+**hybrid = 版面检测 + 识别后端**：版面固定用 PP-DocLayoutV3；识别后端由 `engine_config.yaml` 的 `engines.hybrid.recognizer.backend` 决定（`llama-cpp` = VL GGUF，需空闲显存 ≥3.5GB；`openvino` / `paddle` = PP-OCRv6，进程内、不需要显存；`auto` 才按 `candidates` 探测）。**没有强 GPU 的机器不必再迁就 GGUF**——本机实测 `auto` 会落到 `openvino`，走默认参数处理扫描件不再失败。实际用了哪个后端写在结果的 `recognizer` 字段里（含 `fallback_from`）。
+
 | 信号 | 判断 | 重跑命令 |
 |------|------|---------|
 | Hybrid 把公式/LaTeX 识别乱码或丢编号 | 换 GLM-OCR 验证 | `--glm` |

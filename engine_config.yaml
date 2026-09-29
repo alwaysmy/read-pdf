@@ -18,6 +18,7 @@ defaults:
                              # 仅作用于 paddle 后端（gpu/cpu）；OpenVINO 只有 small 的 ONNX。
                              # 整页 A4 实测：干净页 small/medium 基本持平而 medium 慢约 2x；
                              # 劣质输入（96dpi）medium 明显更稳——最低行置信度 0.63 vs 0.32
+  layout_device: "cpu"       # hybrid 的版面检测（PP-DocLayoutV3）设备：cpu | gpu（默认 cpu，GPU 常被 OCR 占用）
 
 server:                     # 本体 HTTP 服务（server.py / mcp_server.py 默认地址）
   host: "127.0.0.1"         # 仅本机
