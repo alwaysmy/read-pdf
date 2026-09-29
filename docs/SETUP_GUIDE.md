@@ -55,6 +55,39 @@ pip install pillow requests pyyaml
 ### 3.4 版面分析模型（--layout）
 - PaddleX 首次运行 `--layout` 会自动下载 PP-DocLayoutV3 到 `~/.paddlex/official_models/`，无需手动处理（需联网）。
 
+### 3.5 llama.cpp 本体与 CUDA 运行库（hybrid 的 llama-cpp 后端）
+
+`llama_dir` 指向 llama.cpp 的 **Windows CUDA** 构建目录（目录里要有 `llama-server.exe` 与 `ggml-cuda.dll`）。
+从 https://github.com/ggml-org/llama.cpp/releases 下载，注意 **一个版本要下两个包**：
+
+| 包 | 内容 |
+|---|---|
+| `llama-b<build>-bin-win-cuda-<ver>-x64.zip` | 二进制（`llama-server.exe`、`ggml-cuda.dll`…） |
+| `cudart-llama-bin-win-cuda-<ver>-x64.zip` | **CUDA 运行库**：`cudart64_*.dll` / `cublas64_*.dll` / `cublasLt64_*.dll` |
+
+**只解压第一个包会得到一个能正常启动、日志干净、却在 CPU 上算的 llama-server。**
+运行库要么解压到 `llama-server.exe` 旁边，要么让 CUDA Toolkit 的 `bin` 进 `PATH`
+（装了 Toolkit 但没进 `PATH` 也一样加载不到）。
+
+另外要注意**主版本必须匹配**：`ggml-cuda.dll` 链接的是某个具体主版本的运行库
+（例如构建要 `cudart64_12.dll`，而机器上只有 CUDA 13 的 `cudart64_13.dll` —— 名字相似但不能替代）。
+
+**验证方式（唯一可靠）：**
+
+```powershell
+<llama_dir>\llama-server.exe --list-devices
+```
+
+- 列出 `CUDA0: <显卡名> (... MiB free)` → 可用
+- 显示 `(none)` → CUDA 后端起不来，此时**无论显卡多好都在跑 CPU**（慢 3 倍以上，且不报错）
+
+不要用"显存被占用"或"日志里有 CUDA 字样"来判断：显存可能只是 CUDA context；当前构建在默认
+verbosity 下不打印设备信息，后端加载失败时更是被刻意抑制。运行中要确认真在算 GPU，看
+`nvidia-smi --query-gpu=utilization.gpu,clocks.sm,power.draw --format=csv,noheader`——
+应为千兆级 SM 频率与明显抬升的功耗；CPU 回落时是 225~300 MHz、约 8~15 W。
+
+启动时会自动做一次该检查，GPU 不可用会给出明确告警。
+
 ---
 
 ## 四、配置本机路径（engine_config.local.yaml）

@@ -120,6 +120,34 @@ def _qwen_postprocess(text):
     return text
 
 
+_no_proxy_notice_shown = False
+
+
+def _sanitize_bracketed_no_proxy():
+    """去掉 NO_PROXY/no_proxy 里 httpx 解析不了的方括号 IPv6 项（如 `[::1]`）.
+
+    httpx 把 NO_PROXY 每一项拼成 `all://*<host>` 模式；加上 `*` 前缀后它不再把方括号
+    识别为 IPv6 字面量，转而把 `:1]` 当成端口 → `httpx.InvalidURL: Invalid port: ':1]'`。
+    后果是**任何 httpx 客户端都构造不出来**，而 PaddleX 的 VL 客户端正是走 httpx/openai，
+    表现为 hybrid 引擎直接失败（chars=0）。裸 `::1` 没有这个问题，只有带方括号的写法会触发
+    （curl 接受 `[::1]`，所以这类 NO_PROXY 很常见）。
+
+    只改本进程的 os.environ，不动调用者环境。返回是否做了修改。
+    """
+    changed = False
+    for var in ("NO_PROXY", "no_proxy"):
+        val = os.environ.get(var)
+        if not val:
+            continue
+        kept = [x.strip() for x in val.split(",")
+                if x.strip() and not (x.strip().startswith("[") and x.strip().endswith("]"))]
+        new = ",".join(kept)
+        if new != val:
+            os.environ[var] = new
+            changed = True
+    return changed
+
+
 def extract_hybrid(img_path, source=None):
     """PaddleOCR Hybrid：版面检测 + 识别后端，后端由 engines.hybrid.recognizer.backend 决定.
 
@@ -134,6 +162,11 @@ def extract_hybrid(img_path, source=None):
     try:
         from paddleocr import PaddleOCRVL
         import engines as _eng
+        global _no_proxy_notice_shown
+        if _sanitize_bracketed_no_proxy() and not _no_proxy_notice_shown:
+            _no_proxy_notice_shown = True
+            print("[hybrid] 已从本进程 NO_PROXY 中移除方括号 IPv6 项（httpx 无法解析，"
+                  "会导致 VL 客户端构造失败）；原值仍在调用者环境中", flush=True)
         endpoint, api_key = _eng.get_endpoint("hybrid", source or "local")
         key = ('llama-cpp-server', endpoint.rstrip('/'), api_key)
         if key not in _vl_instances:

@@ -92,6 +92,62 @@ def _wants_gpu(args):
     return False
 
 
+_DEVICE_PROBE_CACHE = {}
+
+
+def _probe_llama_devices(exe_path, timeout=25):
+    """跑 `<llama-server> --list-devices`，看 llama.cpp **自己**认到哪些设备.
+
+    返回 (是否有 CUDA 设备 | None 表示无法判定, 原始输出)。按 exe 路径缓存。
+
+    这是"llama.cpp 能不能真用上 GPU"的权威判据，一次覆盖所有失败模式：
+      - CUDA 运行库缺失
+      - **CUDA 主版本与构建不匹配**（构建要 cudart64_12，机器却只装了 13）
+      - 显卡架构不在该构建的 kernel 列表里
+      - 驱动太旧
+    以上情况 llama.cpp **都不报错**，只是静默回落到 CPU —— `--list-devices` 会显示
+    `(none)`，而只查 DLL 是否存在的粗检会把主版本不匹配误判为"可用"。
+    """
+    if exe_path in _DEVICE_PROBE_CACHE:
+        return _DEVICE_PROBE_CACHE[exe_path]
+    result = (None, "")
+    try:
+        r = subprocess.run([exe_path, "--list-devices"],
+                           capture_output=True, timeout=timeout)
+        out = (r.stdout or b"").decode(errors="replace") + \
+              (r.stderr or b"").decode(errors="replace")
+        if r.returncode == 0:
+            has_cuda = any(l.strip().startswith("CUDA") for l in out.splitlines())
+            result = (has_cuda, out)
+        else:
+            result = (None, out)  # 该 build 不支持 --list-devices，无法据此判定
+    except Exception as e:
+        result = (None, f"{type(e).__name__}: {e}")
+    _DEVICE_PROBE_CACHE[exe_path] = result
+    return result
+
+
+def _warn_no_device(name, exe_path, probe_out):
+    """llama.cpp 认不到任何 CUDA 设备时的告警（不中断：用户可能确实想用 CPU）."""
+    toolkit = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+    vers = sorted(os.listdir(toolkit)) if os.path.isdir(toolkit) else []
+    print(
+        f"[server_manager] 引擎 '{name}' 配置了 GPU（-ngl），但 llama.cpp 没有可用设备，"
+        f"将【静默在 CPU 上运行】——慢数倍且无任何报错。\n"
+        f"  llama-server --list-devices 输出：\n"
+        + "".join(f"      {l}\n" for l in probe_out.strip().splitlines()[:6]) +
+        f"  → 常见原因与对策（本机已装 CUDA Toolkit: {', '.join(vers) or '无'}）：\n"
+        f"     1) **CUDA 主版本不匹配**：构建要 cudart64_12.dll 之类，而机器只装了别的版本。\n"
+        f"        查构建到底要哪版：看 {os.path.dirname(exe_path)} 下 ggml-cuda.dll 的导入表；\n"
+        f"        修法：把对应版本的 cudart/cublas DLL 放到该目录（官方 release 的\n"
+        f"        `cudart-llama-bin-win-cuda-<版本>-x64.zip` 就是这些 DLL，与主包是两个 zip）\n"
+        f"     2) 运行库不在加载路径：装好 Toolkit 还不够，bin 必须进 PATH，或把 DLL 拷到\n"
+        f"        {os.path.dirname(exe_path)}\n"
+        f"     3) 显卡架构不在该构建的 kernel 列表里（老卡尤其常见）：换支持该架构的构建\n"
+        f"     判定命令：{exe_path} --list-devices",
+        flush=True)
+
+
 def _warn_missing_cuda(name, exe_path, missing, hint):
     """CUDA 运行库加载不到时给出可操作的告警（不中断：用户可能确实想用 CPU）."""
     print(
@@ -206,11 +262,18 @@ def start(name, server_cfg):
                 flush=True)
             raise FileNotFoundError(fpath)
 
-    # CUDA 运行库预检：缺失时 llama.cpp 会静默回落 CPU（不报错、慢数倍）
-    if _wants_gpu(args):
-        _cuda_ok, _cuda_where, _cuda_missing, _cuda_hint = _find_cuda_runtime(exe_path)
-        if not _cuda_ok:
-            _warn_missing_cuda(name, exe_path, _cuda_missing, _cuda_hint)
+    # GPU 可用性预检：CUDA 后端起不来时 llama.cpp 会静默回落 CPU（不报错、慢数倍）
+    # 先用 llama.cpp 自己的设备列表判定（权威，覆盖版本不匹配/架构不支持等所有情况），
+    # 该 build 不支持 --list-devices 时再退回运行库是否存在（粗检，可能假阳性）
+    # 用 server_cfg 里的 args —— 完整 args 要到显存检查之后才拼出来
+    if _wants_gpu(server_cfg.get("args", [])):
+        _has_dev, _probe_out = _probe_llama_devices(exe_path)
+        if _has_dev is False:
+            _warn_no_device(name, exe_path, _probe_out)
+        elif _has_dev is None:
+            _cuda_ok, _cuda_where, _cuda_missing, _cuda_hint = _find_cuda_runtime(exe_path)
+            if not _cuda_ok:
+                _warn_missing_cuda(name, exe_path, _cuda_missing, _cuda_hint)
 
     # 启动前显存检查（SKILL.md 规则：空闲 >3GB 才能安全启动 OCR 引擎）
     _vram_required = int(server_cfg.get("vram_required_mib", 3000))
@@ -248,7 +311,9 @@ def start(name, server_cfg):
     proc_env = os.environ.copy()
     if server_cfg.get("env"):
         proc_env.update(server_cfg["env"])
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=_err_file, env=proc_env)
+    # stdout 也要收进日志：llama.cpp 的设备列表、"offloaded N layers to GPU"、
+    # 逐请求 token 速率全在 stdout，丢掉它等于丢掉了 GPU 是否生效的唯一直接证据
+    proc = subprocess.Popen(args, stdout=_err_file, stderr=subprocess.STDOUT, env=proc_env)
     _started_servers.append((name, proc, _err_file.name))
 
     def _tail_error_log():
@@ -335,10 +400,9 @@ def stop(name=None):
                     pass
             print(f"[server_manager] 已停止 {n}", flush=True)
             if err_file:
-                try:
-                    os.unlink(err_file)
-                except Exception:
-                    pass
+                # 保留日志：里面有 llama.cpp 的逐请求 token 速率（判断 GPU 是否真在算、
+                # 以及 offload 是否生效的直接证据），删掉等于把唯一的性能证据丢掉
+                print(f"[server_manager] 运行日志保留在 {err_file}", flush=True)
         else:
             remaining.append(entry)
     _started_servers = remaining
