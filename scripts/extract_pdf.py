@@ -1,6 +1,6 @@
 """Extract text from PDF — auto-manages llama servers, outputs txt/md/json."""
 import sys, os, pathlib, argparse, tempfile, base64
-import json, time
+import hashlib, json, time
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -503,6 +503,48 @@ def cache_put(cache_dir, key, text):
         return False
 
 
+_PIPELINE_VERSION = 1  # 识别/合并行为改变时必须 +1（归块算法、预处理、输出格式等）
+
+
+def _engine_model_tag(engine):
+    """本地 llama 系引擎的模型标识 —— 换模型必须让缓存失效."""
+    try:
+        from engines import get_engine
+        eng, src = get_engine(engine)
+        srv = ((eng.get("sources") or {}).get(src) or {}).get("server") or {}
+        return os.path.basename(str(srv.get("model") or ""))
+    except Exception:
+        return ""
+
+
+def _hybrid_recognizer():
+    """hybrid 实际生效的识别后端标识（阶段1 起由配置决定；当前固定 llama-cpp-server）."""
+    return {"backend": "llama-cpp", "model": _engine_model_tag("hybrid")}
+
+
+def _pipeline_signature(engine, dpi, source):
+    """缓存身份指纹 —— 只纳入【会影响识别结果】的参数.
+
+    原 key 只含 engine+source+dpi。识别后端一旦可切换，同一个 key 会让"昨天用 GGUF、
+    今天用 OpenVINO"命中旧结果，静默返回另一个后端的产物——这类错误极难察觉。
+    因此把**实际生效的后端与模型**纳入指纹。
+
+    反过来，日志等级、线程数等不影响结果的参数不纳入：换一次线程数就把全部缓存作废
+    是无谓 miss。改动识别/合并行为时改为递增 _PIPELINE_VERSION。
+    """
+    parts = {"ver": _PIPELINE_VERSION, "engine": engine,
+             "dpi": int(dpi), "source": source or ""}
+    if engine == "ov":
+        parts["backend"] = _ov_backend()
+        parts["tier"] = _ov_tier()
+    elif engine == "hybrid":
+        parts.update(_hybrid_recognizer())
+    elif engine in ("glm", "dsocr", "llama"):
+        parts["model"] = _engine_model_tag(engine)
+    blob = json.dumps(parts, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -918,9 +960,10 @@ def main():
                             time.sleep(2)
                 else:
                     page_num = batch[0]
-                    # v2：v1 的 key 未区分 ov 后端（官方 Paddle 与 OpenVINO 共用），
-                    # 可能残留 OpenVINO 写下的产物；换 key 避免把旧结果当 Paddle 复用
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_{effective_source}_d{args.dpi}_v2"
+                    # 缓存身份 = 文件+页+引擎+dpi + pipeline 指纹（实际生效的后端/模型/档位）。
+                    # 只写 engine+dpi 时，换后端后仍会命中旧结果（见 _pipeline_signature）。
+                    sig = _pipeline_signature(engine, args.dpi, effective_source)
+                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_d{args.dpi}_{sig}"
                     cached = cache_get(cache_dir, key) if (use_cache and cache_dir) else None
                     if cached is not None:
                         text, stats = cached, {"cache": "hit"}
