@@ -6,6 +6,7 @@
 - 只管理本地源服务；云源（server:null）跳过
 """
 import atexit
+import glob
 import os
 import pathlib
 import socket
@@ -15,6 +16,99 @@ import time
 from engines import load_config
 
 _started_servers = []  # list of (name, Popen)
+
+# llama.cpp 的 CUDA 后端要能加载这三个运行库，否则**静默回落 CPU**
+_CUDA_RUNTIME_PATTERNS = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
+
+
+def _cuda_loader_dirs(exe_path):
+    """Windows DLL 加载器**真正**会搜索的目录：exe 同目录 + PATH."""
+    dirs = [os.path.dirname(exe_path)]
+    dirs += [d for d in (os.environ.get("PATH") or "").split(os.pathsep) if d]
+    seen, out = set(), []
+    for d in dirs:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _cuda_toolkit_dirs():
+    """CUDA Toolkit 的 bin 目录 —— 仅用于给出修复提示（加载器不搜索这里）."""
+    dirs = []
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        dirs += [os.path.join(cuda_path, "bin", "x64"), os.path.join(cuda_path, "bin")]
+    root = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+    if os.path.isdir(root):
+        for v in sorted(os.listdir(root), reverse=True):
+            dirs += [os.path.join(root, v, "bin", "x64"), os.path.join(root, v, "bin")]
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def _find_cuda_runtime(exe_path):
+    """检查 llama.cpp 能否**真正加载到** CUDA 运行库.
+
+    返回 (可解析, {模式: 命中目录}, 缺失列表, 修复提示目录).
+
+    为什么必须在启动前查：官方 Windows release 把**二进制**与 **CUDA 运行库**拆成两个
+    zip（`llama-*-bin-win-cuda-*.zip` 与 `cudart-llama-bin-win-cuda-*.zip`）。只解压前者，
+    会得到一个**能正常启动、日志无任何错误、却在 CPU 上算**的 llama-server ——
+    实测同一张图 85s(CPU) vs 29s(GPU)。
+
+    注意判定口径：只认 **exe 同目录与 PATH**（Windows 加载器的真实搜索路径）。
+    装了 CUDA Toolkit、也设了 CUDA_PATH、但 bin 不在 PATH —— 这种情况**依然加载不到**，
+    必须照常告警，只是提示可以更具体（直接告诉你 Toolkit 的 bin 在哪）。
+    """
+    loader = _cuda_loader_dirs(exe_path)
+    where, missing = {}, []
+    for pat in _CUDA_RUNTIME_PATTERNS:
+        hit = None
+        for d in loader:
+            if glob.glob(os.path.join(d, pat)):
+                hit = d
+                break
+        if hit:
+            where[pat] = hit
+        else:
+            missing.append(pat)
+    hint = None
+    if missing:
+        for d in _cuda_toolkit_dirs():
+            if all(glob.glob(os.path.join(d, p)) for p in missing):
+                hint = d
+                break
+    return (not missing), where, missing, hint
+
+
+def _wants_gpu(args):
+    """args 里是否要求 GPU 计算（-ngl/--n-gpu-layers 非 0）."""
+    for i, a in enumerate(args):
+        if a in ("-ngl", "--n-gpu-layers") and i + 1 < len(args):
+            try:
+                return int(args[i + 1]) != 0
+            except ValueError:
+                return False
+    return False
+
+
+def _warn_missing_cuda(name, exe_path, missing, hint):
+    """CUDA 运行库加载不到时给出可操作的告警（不中断：用户可能确实想用 CPU）."""
+    print(
+        f"[server_manager] 引擎 '{name}' 配置了 GPU（-ngl），但 CUDA 运行库加载不到："
+        f"{', '.join(missing)}\n"
+        f"  → llama.cpp 会【静默回落到 CPU】：能正常启动、日志不报错，但实测同一张图"
+        f" 85s(CPU) vs 29s(GPU)。\n"
+        f"  → 判定口径是 Windows 加载器的真实搜索路径（exe 同目录 + PATH）；"
+        f"只装了 CUDA Toolkit 但 bin 不在 PATH 同样加载不到。\n"
+        f"  → 修法（任一即可）：\n"
+        f"     1) 把 CUDA 的 bin 目录加进 PATH"
+        + (f"（本机检测到：{hint}）" if hint else "") + "\n"
+        f"     2) 把 cudart64_*.dll / cublas64_*.dll / cublasLt64_*.dll 拷到 {os.path.dirname(exe_path)}\n"
+        f"     3) 官方 release 的二进制包与 cudart- 运行库包是【两个】zip，两个都要解压\n"
+        f"     4) 或在 engine_config.local.yaml 里给该引擎的 server 加 "
+        f'env: {{"PATH": "<CUDA bin 目录>;%PATH%"}}',
+        flush=True)
 
 
 def _detect_gpu():
@@ -111,6 +205,12 @@ def start(name, server_cfg):
                 f"  → 请按 docs/SETUP_GUIDE.md 下载模型，并在 engine_config.local.yaml 填正确路径",
                 flush=True)
             raise FileNotFoundError(fpath)
+
+    # CUDA 运行库预检：缺失时 llama.cpp 会静默回落 CPU（不报错、慢数倍）
+    if _wants_gpu(args):
+        _cuda_ok, _cuda_where, _cuda_missing, _cuda_hint = _find_cuda_runtime(exe_path)
+        if not _cuda_ok:
+            _warn_missing_cuda(name, exe_path, _cuda_missing, _cuda_hint)
 
     # 启动前显存检查（SKILL.md 规则：空闲 >3GB 才能安全启动 OCR 引擎）
     _vram_required = int(server_cfg.get("vram_required_mib", 3000))
