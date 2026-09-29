@@ -378,15 +378,30 @@ def _ov_via_openvino(ov, img_path):
     return "\n".join(l["text"] for l in lines), stats
 
 
+def _as_list(v):
+    """把可能是 numpy 数组的字段安全转 list.
+
+    不能用 `v or []`：非空 numpy 数组的真值判断会抛
+    ValueError: The truth value of an array with more than one element is ambiguous。
+    PaddleOCR 的 rec_texts/rec_scores/rec_boxes/rec_polys 都是这类字段。
+    """
+    if v is None:
+        return []
+    try:
+        return list(v)
+    except TypeError:
+        return []
+
+
 def _ov_lines_paddle(ov, img_path):
     """paddle 后端：返回行级结果 [{text, poly, bbox, conf}]（用 rec_boxes / rec_polys）."""
     result = next(iter(ov["ocr"].predict(str(img_path))), None)
     if result is None:
         return None, {"error": "paddle predict returned nothing"}
-    texts = list(result.get("rec_texts") or [])
-    scores = list(result.get("rec_scores") or [])
-    boxes = list(result.get("rec_boxes") or [])
-    polys = list(result.get("rec_polys") or [])
+    texts = _as_list(result.get("rec_texts"))
+    scores = _as_list(result.get("rec_scores"))
+    boxes = _as_list(result.get("rec_boxes"))
+    polys = _as_list(result.get("rec_polys"))
     lines = []
     for i, t in enumerate(texts):
         box = None
@@ -1356,6 +1371,8 @@ def main():
                     page_info["cache"] = "hit"
                 if stats.get("recognizer"):
                     page_info["recognizer"] = stats["recognizer"]
+                if stats.get("layout"):
+                    page_info["layout"] = stats["layout"]
                 pages_data.append(page_info)
 
             progress = (i + len(batch)) * 100 // requested_pages
