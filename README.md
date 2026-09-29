@@ -80,10 +80,17 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — | 取决于解析结果 |
 
 > **速度差异很大，别用模型的强弱直觉去选后端。** 实测同一份 PDF 同一批页面：
-> llama-cpp(VL GGUF) 稳态 ~30s/页，paddle(PP-OCRv6 medium, GPU) ~3s/页——**差约 10 倍**，
-> 且两者识别出的字符数完全一致。`auto` 是**质量优先**的顺序（先 llama-cpp），
-> 有 GPU 的机器上若更看重吞吐，直接写 `backend: "paddle"`。
-> （早期文档标的 "~8s/page" 与实测不符，已按两台机器的实测更正。）
+> llama-cpp(VL GGUF) 稳态 ~30s/页，paddle(PP-OCRv6 medium, GPU) ~3s/页。
+> 但**两者不是一类东西**——PP-OCRv6 是判别式检测+识别（出文本行），PaddleOCR-VL 是
+> 生成式多模态模型（版面语义、表格/公式结构、图表理解）。简单文本页上字符数可以一致，
+> 差异要到复杂版式才体现；**不要用"同页字符数相同"去论证可以互相替代**。
+> `auto` 的候选顺序是质量优先（先 llama-cpp）；只有在明确不需要 VL 语义、且确认过
+> 目标文档类型用 PP-OCRv6 足够时，才把它固定成 `backend: "paddle"`。
+>
+> 关于 `llama-cpp` 的耗时：`references/test_log_2026-05-14.md` 记录的是 **6.7~7.4s/页**
+> （RTX 3070 / llama.cpp b9097 / A4 级输入），而本项目在 RTX 5070 Ti / b10639 上复测为
+> **~30s/页**，且旧版读-pdf 同样 ~30s。已排除 FA、输入尺寸与代码版本，差异指向
+> **llama.cpp 构建与显卡组合**，尚在定位中——引用该数字时请注明机器与构建。
 
 **GPU 不是 hybrid 的前提**——那只是历史上先实现了的后端。没有强 GPU 的机器把
 `backend` 设为 `openvino`（Intel）或 `paddle`，或保持 `auto` 让它落到可用者；
