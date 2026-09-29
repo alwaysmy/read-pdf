@@ -66,18 +66,24 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | 引擎 | 速度 | 公式/表格 | 定位 |
 |---|---|---|---|
 | pdfmux+pdfplumber | ~0.85s | 文本层 | 文本 PDF 默认 |
-| PaddleOCR Hybrid | ~2.5s | ✅ 最好 | 图像 PDF 默认 |
+| PaddleOCR Hybrid | 见下（随后端而异） | ✅ 最好 | 图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
 
 **Hybrid = 版面检测 + 识别后端**，版面固定用 PP-DocLayoutV3，识别后端由
 `engines.hybrid.recognizer.backend` 决定：
 
-| backend | 识别 | 前置条件 |
-|---|---|---|
-| `llama-cpp` | PaddleOCR-VL GGUF（经 llama-server） | 空闲显存 ≥ 3.5GB |
-| `openvino` / `paddle` | PP-OCRv6（进程内） | 无（`openvino` 需装 `requirements-ov.txt`） |
-| `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — |
+| backend | 识别 | 前置条件 | 实测速度（A4 正文页） |
+|---|---|---|---|
+| `llama-cpp` | PaddleOCR-VL GGUF（经 llama-server） | 空闲显存 ≥ 3.5GB | **~30s/页稳态**（首屏含预热 ~55s） |
+| `openvino` / `paddle` | PP-OCRv6（进程内） | 无（`openvino` 需装 `requirements-ov.txt`） | **~3s/页**（paddle-gpu + medium 档） |
+| `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — | 取决于解析结果 |
+
+> **速度差异很大，别用模型的强弱直觉去选后端。** 实测同一份 PDF 同一批页面：
+> llama-cpp(VL GGUF) 稳态 ~30s/页，paddle(PP-OCRv6 medium, GPU) ~3s/页——**差约 10 倍**，
+> 且两者识别出的字符数完全一致。`auto` 是**质量优先**的顺序（先 llama-cpp），
+> 有 GPU 的机器上若更看重吞吐，直接写 `backend: "paddle"`。
+> （早期文档标的 "~8s/page" 与实测不符，已按两台机器的实测更正。）
 
 **GPU 不是 hybrid 的前提**——那只是历史上先实现了的后端。没有强 GPU 的机器把
 `backend` 设为 `openvino`（Intel）或 `paddle`，或保持 `auto` 让它落到可用者；

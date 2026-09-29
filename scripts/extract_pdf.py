@@ -919,7 +919,9 @@ def parse_args():
     p.add_argument("--force-ocr", action="store_true", help="Use OCR even if text detected")
     p.add_argument("--glm", action="store_true", help="GLM-OCR Q8_0 (primary, ~4s/page, LaTeX+formulas)")
     p.add_argument("--dsocr", action="store_true", help="DeepSeek-OCR Q8_0 (text-first multimodal, ~0.8s/page, markdown)")
-    p.add_argument("--hybrid", action="store_true", help="PaddleOCR Hybrid (Python layout + GGUF VL, ~8s/page)")
+    p.add_argument("--hybrid", action="store_true",
+                   help="PaddleOCR Hybrid (版面检测 + 识别后端；llama-cpp/VL GGUF 稳态 ~30s/页，"
+                        "paddle/PP-OCRv6 ~3s/页，后端见 engines.hybrid.recognizer)")
     p.add_argument("--ov", action="store_true",
                    help="本地 PP-OCRv6（进程内 OCR，无需 llama-server/GPU；det+rec 纯文本行，无版面）")
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
