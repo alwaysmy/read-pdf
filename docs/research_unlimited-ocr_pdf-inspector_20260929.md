@@ -233,7 +233,75 @@ Timing 分解（单请求，np4）：prompt eval 647ms/908tok（1402 tok/s）、
 2. **非无脑全替** —— 三类反例（发票/表单/CAD）证明必须加**守门回退**：markdown 为空或覆盖率低于阈值（对照 fitz 快速底数）→ 回退现有 pymupdf 路径。PI 空输出静默无告警是接入时最大的坑。
 3. 综合定位：**PI 作主提取器 + 分类路由 + 空输出回退**，而非全面替代；拉线表格场景 PI 显著补短板。
 
-**本轮仍未覆盖**（"各种 PDF"的边界）：加密 PDF、LaTeX 双栏论文、跨页续表书籍、双语混排、旋转页、千页级大书 —— 如需穷尽可第二批补测。
+**本轮仍未覆盖**（"各种 PDF"的边界）→ **已于第二批穷尽，见下节**。
+
+### 第二批穷尽矩阵（2026-09-30，9 样本补齐边缘类型，全 CPU）
+
+样本：arXiv 双栏 LaTeX 论文（1706.03762）、千页大书×2（DaVinci 4234p / A320 FCOM 8138p）、旋转页（90/180/270 合成）、owner-only 加密、user 密码加密（均合成）、双语中英交替（合成）、跨页续表器件大手册（classified=mixed）、198 页大扫描书。脚本 `tests/bench_pdf_matrix2_20260930.py`。
+
+| 类型 | PI 表现 | 现状管线 | 判定 |
+|---|---|---|---|
+| **arXiv 双栏论文** | cov 0.784，**尾部截断**：输出止于 5.4 节，`Residual Dropout`/`Label Smoothing`/`beam search`（均在前 8 页内）全丢 | 完整 10/14 短语 | **PI 输（新反例：双栏尾部/右栏丢内容 ~8%）** |
+| 千页大书 DaVinci/A320 | classify 1.42s / 4.68s（**8138 页仅 4.7s，非全量扫描**）、cov 0.918 / 0.879 | 59.4s / 91.3s | PI 快 1-2 个数量级且不占 GPU |
+| 旋转页 | cov 0.748，内容正确（SCPI/:SOUR/测量全命中） | 正常 | 平（旋转都能处理） |
+| **owner-only 加密** | **报错 `no readable page`（误报不可读）** | **成功出 15566B** | **PI 输（反例+1）** |
+| user 密码加密 | 报错拒绝（正确） | 拒绝（正确） | 平 |
+| 双语中英交替 | cov 0.77 正常 | 正常 | 平 |
+| 跨页续表手册 | 分类 `mixed` 准确（文本+扫描混排）、cov 0.788 | 正常 | PI 快 |
+| 大扫描书（不带 OCR） | 空输出（预期，需走 OCR 模式） | **auto 路由→hybrid GPU OCR** | 口径说明：现状对扫描件本就有 VL 解 |
+
+**口径修正**：`extract_pdf.py` 不带 `--text` 时**自动路由引擎**——扫描/低文本页会走 `hybrid`（GPU OCR），第二批扫描类样本的"现状管线"实际是 hybrid 而非 pdfmux（第一批 scan_book/scan_letter 同理）。对比文本层能力时必须显式 `--text`。
+
+### PI 自带 OCR 模式（process_pdf_with_ocr，PP-OCRv6 small，CPU）—— 跑通
+
+依赖三件套（本机手动补齐，PI 的 GitHub 下载超时）：`PDFIUM_LIB_PATH`→pypdfium2_raw DLL、`ORT_DYLIB_PATH`→onnxruntime capi DLL、模型 det+rec+dict 放 `AppData\Local\pdf-inspector\models\pp-ocrv6-small\oar-ocr-v0.7.0\`。
+
+- 扫描书 3 页：**1.8s（0.6s/页，纯 CPU）**，正文可读（CIP/ISBN/内容提要准确），装饰字处少量乱码（`正三：`/`可业带`/`C|P`）
+- 路由：3 页全 `scanned`；`OcrPdfResult` 附 `pages_routed_to_ocr`/`ocr_time_ms`/`render_time_ms`
+- API 坑：`page_numbers` 是 **1-indexed**（与 `process_pdf` 的 0-indexed `pages` 不一致）
+- 定位：**无 GPU 场景的轻量兜底**；质量档次远低于现状 hybrid（PaddleVL 1.6），有 GPU 时扫描件维持现状路由
+
+### 穷尽后最终结论（21 样本 + OCR 模式）
+
+**PI 优势面**：文本层速度（ms vs s）、拉线表格（pdfplumber 漏 90%+）、分类 21 样本基本全对（garbled 误报仅连接器 1 例）、大书 classify 快、OCR 模式 CPU 兜底。
+
+**PI 四类反例**（守门必须覆盖）：
+1. 非常规文本层空输出无告警：发票 / 表单 / CAD 矢量字
+2. owner-only 加密误报不可读（现状能读）
+3. **双栏论文尾部截断 ~8%**（cov 0.784）
+4. 双栏 datasheet 过度表格化（正文误包进表格行）
+
+**接入守门（最终版）**：PI 主提取 → 三道闸：① markdown 空 → 回退；② coverage < 0.85（对照 fitz 文本层底数，**同一道闸同时抓空输出/截断/漏内容**）→ 回退；③ 加密文档（needs_pass 或 PI 报错）→ 传 `password` 或回退。扫描件维持现状 auto→hybrid 路由，PI OCR 模式留作无 GPU 备胎。
+
+### pdf-inspector 第二批穷尽测试（2026-09-30，9 样本 + OCR 模式，全 CPU）
+
+样本：arXiv 双栏 LaTeX 论文（自下载）、DaVinci 千页大书 4234p、A320 FCOM 8138p、自造旋转页/owner 加密/user 加密/双语混排、2023 器件大手册（跨页续表）、运算放大器扫描书 198p。脚本 `tests/bench_pdf_matrix2_20260930.py` + 诊断脚本，数据 `TEST_RESULTS/read-pdf-bench_20260930/pdf_matrix2_*.json`。
+
+| 样本 | PI 结果 | 现状管线对照 | 判定 |
+|---|---|---|---|
+| **arXiv 双栏论文** | cov 0.784，**实锤尾部/右栏截断**：止于 5.4 节，`Residual Dropout`/`Label Smoothing`/`beam search`（在所测页范围内）全部丢失 | 全部命中 | **现状胜，PI 双栏重组丢内容** |
+| DaVinci 4234p | classify 1.42s（**采样非全量**——连接器手册 16.8s 属个例）、cov 0.918 | 59.4s | PI 胜 |
+| A320 FCOM 8138p | classify 4.68s、cov 0.879 | 91s（且 auto 路由到 hybrid） | PI 速度胜 |
+| 旋转页 90/180/270 | **正常工作**（关键词与现状一致、目录表格正确），cov 0.748 为口径差 | 正常 | 平手 |
+| **owner-only 加密** | **报错 `no readable page`（误报不可读）** | **正常出内容 15566B** | **现状胜，PI 反例 +1** |
+| user 密码加密 | 正确拒绝 | 正确拒绝（`document closed or encrypted`） | 平手（PI 报错文案对 owner 档不准） |
+| 双语混排 12p | cov 0.77，正常 | 正常 | 平手 |
+| 跨页续表大手册 | classify `mixed` ✓、cov 0.788 | 正常 | 平手 |
+| 扫描书 198p | `process_pdf` 静默空输出（无 OCR）；**`process_pdf_with_ocr` 3 页 1.8s 出 1119 chars**（封面少量错字、CIP 段质量可用），路由字段 `pages_routed_to_ocr` 齐全 | auto 路由 hybrid（GPU VL 2.3s/页） | **PI 自带 CPU OCR 可作廉价兜底**（0.6s/页 CPU，质量弱于 VL） |
+
+**第二批结论**：
+1. PI 新增反例 2 个：**双栏论文尾部截断 8%**、**owner-only 加密误报不可读**（连同第一批发票/表单/CAD 空输出，共 5 类需守门/绕行的场景）。
+2. 千页大书 classify 是**采样**（4234p 仅 1.42s），速度无压力；connector 手册 16.8s 属个例。
+3. `process_pdf_with_ocr`（CPU PP-OCRv6-small）可用但**依赖三件套必须预配置**：`PDFIUM_LIB_PATH`（pypdfium2_raw 自带 dll）、PP-OCRv6 det/rec onnx + dict（PI 自身下载器连 GitHub 超时，需手动放到 `%LOCALAPPDATA%\pdf-inspector\models\pp-ocrv6-small\oar-ocr-v0.7.0\`）、`ORT_DYLIB_PATH`（标准 pip onnxruntime capi dll）。
+4. **API 坑**：`process_pdf` 用 0-indexed `pages`，`process_pdf_with_ocr` 用 1-indexed `page_numbers`（混用必错）。
+
+**测试口径修正（重要）**：`extract_pdf.py` 不带引擎参数时**自动路由**——扫描/低文本页会走 `hybrid`（GPU OCR）而非 pdfmux 文本路径。第一批与本批的扫描类样本（scan_book/scan_letter/scan_opamp/a320 中段）"现状对照"实际是 hybrid 路径（其中 2026-09-30 的 scan_opamp/a320 二次验证在显卡占用期间启动过 hybrid 服务，启动前有 3GB 空闲显存预检、跑完即停）。后续对比文本层路径须显式 `--text`。
+
+### 第二批测试脚本（追加留痕）
+
+- `tests/prep_batch2_20260930.py` — 造旋转/加密/双语样本 + 大书探测
+- `tests/bench_pdf_matrix2_20260930.py` / `tests/analyze_batch2_20260930.py` / `tests/diag_batch2_20260930.py` — 矩阵与定向诊断
+- `tests/pi_ocr_mode_20260930.py` — OCR 模式（PDFium/ORT/模型配置全记录）
 
 ### 实测脚本与数据（留痕）
 
@@ -245,7 +313,9 @@ Timing 分解（单请求，np4）：prompt eval 647ms/908tok（1402 tok/s）、
 - `tests/gen_compare_html_20260929.py` / `tests/merge_unlimited_compare_20260929.py` — 四引擎并排对比页
 - `tests/bench_pdfinspector_20260929.py` / `tests/check_garbled_20260929.py` — pdf-inspector 分类/提取/garbled 核验
 - `tests/bench_pdf_matrix_20260930.py` / `tests/show_matrix_20260930.py` / `tests/spotcheck_datasheet_20260930.py` / `tests/phrase_check_20260930.py` — 12 样本矩阵测试与抽查
-- `TEST_RESULTS/read-pdf-bench_20260930/` — 矩阵 JSON + 各样本 PI/管线输出
+- `tests/bench_pdf_matrix2_20260930.py` / `tests/prep_batch2_20260930.py` / `tests/analyze_batch2_20260930.py` / `tests/diag_batch2_20260930.py` / `tests/probe_big_books_20260930.py` — 第二批穷尽矩阵（边缘类型）与诊断
+- `tests/pi_ocr_mode_20260930.py` — PI 自带 OCR 模式（PP-OCRv6 CPU）验证
+- `TEST_RESULTS/read-pdf-bench_20260930/` — 矩阵 JSON + 各样本 PI/管线输出 + 合成样本（加密/旋转/双语）
 - `tests/ocr_engine_visual_review_20260929_183735.md` — 四引擎视觉审查报告（子代理交叉验证产出）
 - `TEST_RESULTS/read-pdf-bench_20260929/`（ChatWorkspace）— JSON/MD/日志输出
 
