@@ -79,18 +79,22 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | `openvino` / `paddle` | PP-OCRv6（进程内） | 无（`openvino` 需装 `requirements-ov.txt`） | **~3s/页**（paddle-gpu + medium 档） |
 | `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — | 取决于解析结果 |
 
-> **整页耗时 = 版面检测 + 逐版面块的 VL 请求**，两项都要看，只盯一项会得出错误结论：
+> **整页耗时 = 版面检测 + 逐版面块的 VL 请求**，而**后者通常占大头**。本机（Quadro T1000，
+> 密排 A4 第 1 页共 36 块，整页 40.9 s）实测：
 >
 > | 组成 | 实测 |
 > |---|---|
-> | 单次 VL 请求 | 强 GPU（RTX 5070 Ti）**40~80 ms**；T1000 **约 1.2 s** |
-> | 版面检测 PP-DocLayoutV3（密排 A4） | GPU **4.2 s**；CPU **20.5 s**（4.9×） |
+> | 逐块 VL 请求 | 合计 **31.6 s（77%）**：36 次、均值 878 ms（prompt eval 22.4 s + 生成 9.2 s） |
+> | 版面检测 PP-DocLayoutV3 | 热态 **约 3.2 s**（CPU 与 GPU 基本无差；只有冷启动首次 CPU 8.3 s / GPU 3.5 s） |
 >
-> 一个十几到几十块的 A4 页在强 GPU 上因此是 **1~3 s** 量级——与
-> `references/test_log_2026-05-14.md` 的 6.7~7.4 s/页 属同一量级。弱 GPU 上单次请求就慢
-> 15~30 倍，整页自然到 30~50 s。<br>
-> `defaults.layout_device` 默认 `cpu`（历史上为把显存让给 OCR）：密排页上这一项就占约 20 s，
-> 显存够时设成 `gpu` 明显更快。
+> 单次 VL 请求的耗时随显卡差很多：强 GPU（RTX 5070 Ti）**40~80 ms**，弱 GPU（T1000）**约 880 ms**。
+> 强 GPU 上一页几十块约 2~3 s，加版面检测即 **2~6 s** 量级——与
+> `references/test_log_2026-05-14.md` 的 6.7~7.4 s/页、首版 README 的 `~2.5s/页` 一致；
+> 弱 GPU 单次请求就慢十几倍，整页才到 30~50 s。
+>
+> `defaults.layout_device` 选 `cpu` 还是 `gpu` **不改变结果**（实测两种模式的块数、标签、
+> bbox、score 逐块完全一致，bbox 偏差 0.00 px），稳态速度也基本相同——它只影响冷启动的
+> 首次加载。
 >
 > **`auto` 的候选顺序是质量优先（先 llama-cpp）**：PP-OCRv6 与 PaddleOCR-VL 不是一类东西——
 > 前者是判别式检测+识别（出文本行），后者是生成式多模态模型（版面语义、表格/公式结构、
