@@ -183,6 +183,26 @@ def main():
             os.environ.pop("no_proxy", None)
     print("10. NO_PROXY 方括号 IPv6 清洗 OK")
 
+    # 11. 服务已运行时 _probe_llama_cpp 绕过显存检查
+    # 场景：llama-server 常驻（模型已加载、显存已占），auto 探测不应再按
+    # 空闲显存判定——否则被自己占用的显存误杀而回落别的后端
+    orig_open = server_manager.is_port_open
+    orig_free = server_manager._query_free_vram_mib
+    try:
+        server_manager._query_free_vram_mib = lambda: 1  # 远低于任何阈值
+        server_manager.is_port_open = lambda port, host="127.0.0.1": False
+        closed, r_closed = ep._probe_llama_cpp()
+        server_manager.is_port_open = lambda port, host="127.0.0.1": True
+        opened, r_open = ep._probe_llama_cpp()
+        if closed is False and "空闲显存" in str(r_closed):
+            assert opened is True, f"服务已运行应绕过显存检查: {r_open}"
+            print(f"11. 服务运行时探测绕过显存检查 OK（{r_open}）")
+        else:
+            print(f"11. 本机前置不全（{r_closed}），跳过显存绕过断言")
+    finally:
+        server_manager.is_port_open = orig_open
+        server_manager._query_free_vram_mib = orig_free
+
     print("\n全部通过 ✅")
 
 

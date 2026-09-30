@@ -496,9 +496,13 @@ def _hybrid_cfg():
 
 
 def _probe_llama_cpp():
-    """llama-cpp 后端能力探测：llama-server + 模型/投影文件 + 空闲显存达标.
+    """llama-cpp 后端能力探测：llama-server + 模型/投影文件 +（需新启动时）空闲显存达标.
 
     只探测，不启动服务、不加载模型。
+    显存检查只对"服务未运行、需要新启动"有意义：已在监听的服务模型已加载
+    （llama-server 先加载完才监听端口），不再需要新显存——若仍按空闲显存判定，
+    会被自己占用的显存误杀（实测：服务常驻占 2.1GB 后，探测报
+    "空闲 1828 < 3500" 而回落 openvino，尽管服务健康可用）。
     """
     try:
         from engines import get_engine, load_config
@@ -514,10 +518,13 @@ def _probe_llama_cpp():
             p = str(srv.get(k) or "").strip()
             if not p or not os.path.exists(p):
                 return False, f"{k} 未配置或不存在"
+        port = int(srv.get("port", 0) or 0)
+        if port and server_manager.is_port_open(port):
+            return True, "ok（服务已在运行）"
         need = int(srv.get("vram_required_mib", 3000))
         free = server_manager._query_free_vram_mib()
         if free is not None and free < need:
-            return False, f"空闲显存 {free} MiB < 需要 {need} MiB"
+            return False, f"空闲显存 {free} MiB < 需要 {need} MiB（服务未运行，需新启动）"
         return True, "ok"
     except Exception as e:
         return False, f"探测异常：{e}"
