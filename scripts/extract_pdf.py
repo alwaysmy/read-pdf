@@ -991,7 +991,7 @@ def parse_args():
     p.add_argument("--layout", action="store_true", help="Layout analysis: detect table/figure regions, crop screenshots, output layout JSON (PP-DocLayoutV3)")
     p.add_argument("--layout-only", action="store_true", help="Layout analysis only: skip OCR, just output layout JSON + crops (implies --layout)")
     p.add_argument("--layout-min-score", type=float, default=0.3, help="Layout detection min score (default 0.3)")
-    p.add_argument("--layout-device", default="cpu", choices=["cpu", "gpu"], help="Layout detection device (default cpu, GPU 被 OCR 服务占用时用 CPU)")
+    p.add_argument("--layout-device", default=None, choices=["cpu", "gpu"], help="Layout detection device (default: engine_config defaults.device; 显式传参覆盖. GPU 被大任务占用时可指定 cpu 兜底)")
     p.add_argument("--no-cache", action="store_true", help="Disable extraction cache (default: cache enabled)")
     p.add_argument("--refresh-cache", action="store_true", help="Force re-OCR and refresh cache (ignore existing cache)")
     p.add_argument("--source", default=None, choices=["local", "cloud"], help="Temporarily switch service source (overrides engine default_source)")
@@ -1003,6 +1003,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.layout_device is None:
+        # 版面检测设备跟随 engine_config defaults.device（配置文件驱动，本机可经
+        # engine_config.local.yaml 覆盖；无 GPU 的部署把它改成 cpu 即可）
+        try:
+            from engines import load_config
+            args.layout_device = (load_config().get("defaults") or {}).get("device") or "gpu"
+        except Exception:
+            args.layout_device = "gpu"
     pdf_path = pathlib.Path(args.pdf_path)
     if not pdf_path.exists():
         print(f"ERROR: file not found: {pdf_path}", flush=True)

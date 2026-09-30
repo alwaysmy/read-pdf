@@ -61,6 +61,15 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 
 引擎配置集中在 `engine_config.yaml`（本地/云双源），本机私有覆盖用 `engine_config.local.yaml`（gitignore）。详见 `docs/engine-decoupling-design_20260808.md`。
 
+**初次部署检查 `defaults.device`**：它同时决定本地 OCR 服务与 `--layout-device` 版面检测的默认设备（2026-09-30 起版面检测不再硬编码 cpu）。强卡保持默认 `gpu`；**无 GPU 的部署**在 `engine_config.local.yaml` 覆盖为 `cpu`：
+
+```yaml
+defaults:
+  device: cpu
+```
+
+实测参考（5070 Ti，输出结果与 CPU 完全一致）：版面稳态推理 GPU 0.048s/页 vs CPU 2.626s/页（55 倍）；端到端 10 页 GPU 19.9s vs CPU 39.9s（2 倍——GPU 侧含 CUDA 初始化固定开销，**≤2 页的短任务两者相当甚至 CPU 略快**，页数多才拉开差距）。
+
 ## 引擎对比（实测）
 
 | 引擎 | 速度 | 公式/表格 | 定位 |
