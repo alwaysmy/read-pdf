@@ -3,7 +3,7 @@
 # 云端密钥只用占位符；真实 token 填 engine_config.local.yaml（gitignore，不进仓库）
 defaults:
   llama_dir: ""              # llama-server 所在目录 —— 本机路径填 engine_config.local.yaml
-  device: gpu                # 本地服务默认设备：gpu | cpu（默认 gpu）
+  device: gpu                # 本地服务默认设备：gpu | cpu（默认 gpu）；同时作为独立 --layout 模式 --layout-device 的默认值（2026-09-30 起，5070 Ti 实测独立版面 GPU 比 CPU 快 55 倍且结果一致，无 GPU 部署改 cpu）
   gpu_fallback: true         # 配置 gpu 但检测不到 GPU 时：告警并回退 cpu（仅本地服务）
   ocr_device: "cpu"          # --ov 进程内 OCR 设备：cpu | gpu
                              # gpu 需 CUDA 版 paddlepaddle（官方索引装 paddlepaddle-gpu）；

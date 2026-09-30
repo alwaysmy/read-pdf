@@ -141,7 +141,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 | `--layout` | `--layout`（版面检测：PP-DocLayoutV3 定位表格/示意图 → 裁剪存图 + 布局 JSON） |
 | `--layout-only` | `--layout-only`（只出布局 JSON + 裁剪图，不 OCR） |
 | `--layout-min-score N` | `--layout-min-score N`（版面检测最小置信度，默认 0.3） |
-| `--layout-device cpu\|gpu` | `--layout-device`（版面检测设备，默认 cpu，GPU 被 OCR 占用时可兜底） |
+| `--layout-device cpu\|gpu` | `--layout-device`（版面检测设备，默认跟随 engine_config `defaults.device`（gpu）；GPU 被大任务占用时可显式传 cpu） |
 | `--no-cache` | `--no-cache`（禁用抽取缓存，默认开启） |
 | `--refresh-cache` | `--refresh-cache`（强制重跑 OCR 并刷新缓存） |
 | `--source local\|cloud` | `--source`（临时切换服务源；云源需 token，仅 hybrid 支持 cloud） |
@@ -175,7 +175,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 
 **PaddleOCR v6 进程内引擎（`--ov`）：不需要 llama-server，也不需要显存。** 官方 PP-OCRv6（det+rec）直接在 Python 进程里跑；后端由 `engine_config.yaml` 的 `defaults.ocr_backend` 控制：`auto`（默认）按 `ocr_device` 走 paddle 后端（gpu / cpu），**OpenVINO 不会被自动选中**，需显式写 `openvino`。实测整页 A4 密排：GPU ~2.0s、OpenVINO(CPU) ~4.6s、Paddle CPU ~35s；三者识别质量同级（同页均 117 行 / conf 0.98）。模型规格由 `defaults.ocr_model_tier` 控制（`small` 默认；`medium` 对劣质扫描件明显更稳但慢约 2x，仅作用于 paddle 后端）。**只出纯文本行，没有版面/VL**——表格、公式、多栏排版优先 hybrid/glm。当 hybrid 因显存不足起不来时，这是当下唯一能跑的图像 PDF 路径。
 
-**`--layout` 版面检测模式（PP-DocLayoutV3）。** 定位表格/示意图区域 → 按 bbox 裁剪存图 → 输出 `{name}_output/layout/{name}_layout.json`（label+bbox+score+page）+ `layout/crops/*.png`。用途：PDF→EPUB 重排、元素提取、版面分析。默认 `--layout-device cpu`（GPU 被 OCR 占用时兜底）。
+**`--layout` 版面检测模式（PP-DocLayoutV3）。** 定位表格/示意图区域 → 按 bbox 裁剪存图 → 输出 `{name}_output/layout/{name}_layout.json`（label+bbox+score+page）+ `layout/crops/*.png`。用途：PDF→EPUB 重排、元素提取、版面分析。默认 `--layout-device` 跟随 engine_config `defaults.device`（gpu；5070 Ti 实测独立模式 GPU 0.048s/页 vs CPU 2.626s/页，结果零差异；≤2 页短任务两者相当），无 GPU 部署在 local 配置覆盖为 cpu；hybrid 管线内版面另由 `defaults.layout_device` 单独控制。
 
 **抽取缓存（默认开启）。** 每页 OCR 结果缓存到 `{name}_output/.cache/`（key 含 PDF 名/页码/引擎/源/DPI，自动失效），二次处理直接读缓存免 OCR（实测 total_time 0.0s）。`--no-cache` 禁用，`--refresh-cache` 强制重跑。
 
