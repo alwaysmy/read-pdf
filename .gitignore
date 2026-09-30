@@ -23,3 +23,5 @@ tests/regress/
 tests/regress_cloud/
 tests/*.png
 *.bak
+
+tests/*.jpg
