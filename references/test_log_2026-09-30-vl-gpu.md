@@ -151,6 +151,29 @@ bbox 最大偏差 0.00 px、score 最大偏差 0.0000 —— 所以 `layout_devi
 **缩短整页耗时的着力点是逐块 VL 请求（占 77%）**，即减少/合并请求次数或换更强的显卡；
 版面检测的设备选择影响很小。
 
+### 3.4 热态分账与"合并请求"方向的验证（补测）
+
+**热态口径**（服务常驻 + 进程内预热后）：本机 llama-cpp 后端 p1（40 块）约 7.0~7.5 s，
+稀疏页 p5（7 块）**1.86 s**——与另一台机器（7945HX）教材页 7.3 块/页 的 2.32 s/页
+同量级。**块密度（VL 请求数）是页间耗时差异的主因**，斜率约 0.17 s/块（T1000）。
+
+三项补充结论：
+
+1. **"合并逐块请求"无需改造**：实测 PaddleX 管线内部已批量化——
+   `vl_rec_model.batch_size=8192`、`genai_client.max_concurrency=200`，整页所有框
+   攒一批并发发出。早前从冷启动日志得出"逐块串行"是误判：36 次请求 sum 31.6 s
+   是 llama-server **单 slot 排队**的服务端总和，不是客户端串行开销。
+2. **`-np 4`（4 并行 slot）无收益**：p1 热态 7.46 s vs `-np 1` 的 7.0 s。瓶颈是
+   GPU 吞吐本身，不是 slot 排队。
+3. **hybrid 管线内部的版面检测跑在 GPU**（probe 实证：`layout_det_model
+   device=gpu:0, batch_size=8`；管线整体 `batch_size=64, device=gpu:0`）。
+   因此 `--layout` 独立模式下 `extract_layout(device=cpu)` 热态 3.2 s 的数字
+   **不可平移**到 hybrid 管线——后者版面由管线自管，与 `defaults.layout_device`
+   （仅作用于 `--layout`）无关。
+
+附带：openvino/paddle 后端对块密度不敏感（p1 6.45 s vs p5 5.39 s，整页一次识别，
+固定开销主导）。
+
 
 
 
