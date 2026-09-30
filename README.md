@@ -66,31 +66,36 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 | 引擎 | 速度 | 公式/表格 | 定位 |
 |---|---|---|---|
 | pdfmux+pdfplumber | ~0.85s | 文本层 | 文本 PDF 默认 |
-| PaddleOCR Hybrid | 见下（随后端而异） | ✅ 最好 | 图像 PDF 默认 |
+| PaddleOCR Hybrid | ~2.5s（有能力的 GPU） | ✅ 最好 | 图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
 
 **Hybrid = 版面检测 + 识别后端**，版面固定用 PP-DocLayoutV3，识别后端由
 `engines.hybrid.recognizer.backend` 决定：
 
-| backend | 识别 | 前置条件 | 实测速度（A4 正文页） |
+| backend | 识别 | 前置条件 | 典型速度 |
 |---|---|---|---|
-| `llama-cpp` | PaddleOCR-VL GGUF（经 llama-server） | 空闲显存 ≥ 3.5GB | **~30s/页稳态**（首屏含预热 ~55s） |
+| `llama-cpp` | PaddleOCR-VL GGUF（经 llama-server） | 空闲显存 ≥ 3.5GB | 强 GPU **~2.5s/页**；弱 GPU（如 T1000）30~50s/页 |
 | `openvino` / `paddle` | PP-OCRv6（进程内） | 无（`openvino` 需装 `requirements-ov.txt`） | **~3s/页**（paddle-gpu + medium 档） |
 | `auto`（默认） | 按 `candidates` 顺序探测取首个可用 | — | 取决于解析结果 |
 
-> **速度差异很大，别用模型的强弱直觉去选后端。** 实测同一份 PDF 同一批页面：
-> llama-cpp(VL GGUF) 稳态 ~30s/页，paddle(PP-OCRv6 medium, GPU) ~3s/页。
-> 但**两者不是一类东西**——PP-OCRv6 是判别式检测+识别（出文本行），PaddleOCR-VL 是
-> 生成式多模态模型（版面语义、表格/公式结构、图表理解）。简单文本页上字符数可以一致，
-> 差异要到复杂版式才体现；**不要用"同页字符数相同"去论证可以互相替代**。
-> `auto` 的候选顺序是质量优先（先 llama-cpp）；只有在明确不需要 VL 语义、且确认过
-> 目标文档类型用 PP-OCRv6 足够时，才把它固定成 `backend: "paddle"`。
+> **整页耗时 = 版面检测 + 逐版面块的 VL 请求**，两项都要看，只盯一项会得出错误结论：
 >
-> 关于 `llama-cpp` 的耗时：`references/test_log_2026-05-14.md` 记录的是 **6.7~7.4s/页**
-> （RTX 3070 / llama.cpp b9097 / A4 级输入），而本项目在 RTX 5070 Ti / b10639 上复测为
-> **~30s/页**，且旧版读-pdf 同样 ~30s。已排除 FA、输入尺寸与代码版本，差异指向
-> **llama.cpp 构建与显卡组合**，尚在定位中——引用该数字时请注明机器与构建。
+> | 组成 | 实测 |
+> |---|---|
+> | 单次 VL 请求 | 强 GPU（RTX 5070 Ti）**40~80 ms**；T1000 **约 1.2 s** |
+> | 版面检测 PP-DocLayoutV3（密排 A4） | GPU **4.2 s**；CPU **20.5 s**（4.9×） |
+>
+> 一个十几到几十块的 A4 页在强 GPU 上因此是 **1~3 s** 量级——与
+> `references/test_log_2026-05-14.md` 的 6.7~7.4 s/页 属同一量级。弱 GPU 上单次请求就慢
+> 15~30 倍，整页自然到 30~50 s。<br>
+> `defaults.layout_device` 默认 `cpu`（历史上为把显存让给 OCR）：密排页上这一项就占约 20 s，
+> 显存够时设成 `gpu` 明显更快。
+>
+> **`auto` 的候选顺序是质量优先（先 llama-cpp）**：PP-OCRv6 与 PaddleOCR-VL 不是一类东西——
+> 前者是判别式检测+识别（出文本行），后者是生成式多模态模型（版面语义、表格/公式结构、
+> 图表理解）。简单文本页上字符数可以一致，差异要到复杂版式才体现；
+> **不要用"同页字符数相同"去论证两者可以互相替代**，也不要据此把 `paddle` 设成默认。
 
 **GPU 不是 hybrid 的前提**——那只是历史上先实现了的后端。没有强 GPU 的机器把
 `backend` 设为 `openvino`（Intel）或 `paddle`，或保持 `auto` 让它落到可用者；
