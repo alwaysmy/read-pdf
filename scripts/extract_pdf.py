@@ -143,7 +143,13 @@ def _sanitize_bracketed_no_proxy():
                 if x.strip() and not (x.strip().startswith("[") and x.strip().endswith("]"))]
         new = ",".join(kept)
         if new != val:
-            os.environ[var] = new
+            if new:
+                os.environ[var] = new
+            else:
+                # 全部都是方括号项：清空比删除更稳妥——某些库按"变量存在与否"区分
+                # "未设置"与"空串"（空串对 httpx 意为"代理全放行"，删变量则回退读
+                # 注册表代理；这里保持变量存在且为空，行为最接近原意图）
+                os.environ[var] = ""
             changed = True
     return changed
 

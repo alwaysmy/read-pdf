@@ -48,6 +48,141 @@ def main():
     started = server_manager.ensure("paddle_vl", engine_p["sources"][src].get("server"))
     print(f"5. 云源 ensure: started={started}（应为 False/跳过）")
 
+    # ---- GPU 生效性三层防护（回归保护）----
+    import io
+    import os
+    import tempfile
+    import contextlib
+
+    # 6. _wants_gpu：-ngl/--n-gpu-layers 判定
+    assert server_manager._wants_gpu(["-ngl", "100", "-c", "8192"]) is True
+    assert server_manager._wants_gpu(["-ngl", "0"]) is False
+    assert server_manager._wants_gpu(["-c", "8192"]) is False
+    assert server_manager._wants_gpu(["--n-gpu-layers", "50"]) is True
+    print("6. _wants_gpu 判定 OK")
+
+    # 7. _find_cuda_runtime：exe 同目录有/无运行库（隔离 PATH，避免宿主 CUDA 干扰）
+    old_path = os.environ.get("PATH", "")
+    with tempfile.TemporaryDirectory() as td:
+        exe = pathlib.Path(td) / "llama-server.exe"
+        exe.write_bytes(b"")
+        try:
+            os.environ["PATH"] = td + os.pathsep + r"C:\Windows\System32"
+            ok, where, missing, hint = server_manager._find_cuda_runtime(str(exe))
+            assert not ok and set(missing) == set(server_manager._CUDA_RUNTIME_PATTERNS), \
+                f"空目录应缺全部运行库: {missing}"
+            for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+                (pathlib.Path(td) / name).write_bytes(b"")
+            ok2, _, missing2, _ = server_manager._find_cuda_runtime(str(exe))
+            assert ok2 and not missing2, f"运行库齐备应通过: {missing2}"
+        finally:
+            os.environ["PATH"] = old_path
+    print("7. _find_cuda_runtime 缺失/齐备两态 OK")
+
+    # 8. _probe_llama_devices：输出解析（mock，不真跑 llama-server）
+    import subprocess as _sp
+    real_run = _sp.run
+    server_manager._DEVICE_PROBE_CACHE.clear()
+
+    def _fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        r = R()
+        return r
+
+    def _make(out_text):
+        def _fr(cmd, **kw):
+            class R:
+                returncode = 0
+            rr = R()
+            rr.stdout = out_text.encode()
+            rr.stderr = b""
+            return rr
+        return _fr
+
+    cases = [
+        ("Available devices:\n  CUDA0: Quadro T1000 (4095 MiB)\n", True),
+        ("Available devices:\n  OPENVINO0: OpenVINO Runtime\n", False),
+        ("Available devices:\n  (none)\n", False),
+    ]
+    for out, expect in cases:
+        server_manager._DEVICE_PROBE_CACHE.clear()
+        sm_run = server_manager.subprocess.run
+        server_manager.subprocess.run = _make(out)
+        try:
+            got, _ = server_manager._probe_llama_devices(r"D:\fake\llama-server.exe")
+            assert got is expect, f"输出解析错误: {out!r} -> {got}, 期望 {expect}"
+        finally:
+            server_manager.subprocess.run = sm_run
+    server_manager.subprocess.run = _make(b"")
+    server_manager._DEVICE_PROBE_CACHE.clear()
+    try:
+        got, _ = server_manager._probe_llama_devices(r"D:\fake\nope.exe")
+        assert got is None, "exe 不存在应返回 None（无法判定）"
+    finally:
+        server_manager.subprocess.run = real_run
+    server_manager._DEVICE_PROBE_CACHE.clear()
+    print("8. _probe_llama_devices 三态解析 OK")
+
+    # 9. _model_size_mib + _verify_gpu_offload 阈值（mock 显存查询）
+    with tempfile.TemporaryDirectory() as td:
+        m1 = pathlib.Path(td) / "model.gguf"
+        m2 = pathlib.Path(td) / "mmproj.gguf"
+        m1.write_bytes(b"x" * (100 * 1024 * 1024))
+        m2.write_bytes(b"x" * (50 * 1024 * 1024))
+        cfg_srv = {"model": str(m1), "mmproj": str(m2)}
+        size = server_manager._model_size_mib(cfg_srv)
+        assert 149 < size < 151, f"模型大小合计错误: {size}"
+        # 卸载到位（增量 153 = 102% ≥ 80% → 不告警）与未卸载（增量 0 → 告警）
+        buf = io.StringIO()
+        real_q = server_manager._query_used_vram_mib
+        try:
+            with contextlib.redirect_stdout(buf):
+                server_manager._query_used_vram_mib = lambda: 203
+                server_manager._verify_gpu_offload("hybrid", 50, cfg_srv)
+                assert "没有真正卸载" not in buf.getvalue(), "增量足够却告警"
+                server_manager._query_used_vram_mib = lambda: 50
+                server_manager._verify_gpu_offload("hybrid", 50, cfg_srv)
+                assert "没有真正卸载" in buf.getvalue(), "增量≈0 未告警"
+        finally:
+            server_manager._query_used_vram_mib = real_q
+    print("9. _model_size_mib / _verify_gpu_offload 阈值 OK")
+
+    # 10. NO_PROXY 方括号 IPv6 清洗（extract_pdf._sanitize_bracketed_no_proxy）
+    # 时序事实：paddlex 管线构造会把 NO_PROXY 重置为系统注入值，因此清洗函数
+    # 必须在每次构造 VL 客户端前调用（产品代码已如此）；本条只测清洗逻辑本身，
+    # 用一个不会触发管线构造的环境布置。
+    import extract_pdf as ep
+    old_np = os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
+    try:
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1,[::1]"
+        os.environ.pop("no_proxy", None)
+        before = os.environ.get("NO_PROXY")
+        changed = ep._sanitize_bracketed_no_proxy()
+        now = os.environ.get("NO_PROXY")
+        # 若布置被外部重置（环境注入行为），跳过值断言，只验证函数不改坏环境
+        if before == "localhost,127.0.0.1,::1,[::1]":
+            assert changed and now == "localhost,127.0.0.1,::1", \
+                f"清洗结果错误: before={before!r} after={now!r}"
+        else:
+            print("      (环境注入重置了布置，跳过值断言)")
+        # 无方括号项：不动
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+        if os.environ.get("NO_PROXY") == "localhost,127.0.0.1":
+            assert not ep._sanitize_bracketed_no_proxy(), "无方括号项不应改动"
+    finally:
+        if old_np[0] is not None:
+            os.environ["NO_PROXY"] = old_np[0]
+        else:
+            os.environ.pop("NO_PROXY", None)
+        if old_np[1] is not None:
+            os.environ["no_proxy"] = old_np[1]
+        else:
+            os.environ.pop("no_proxy", None)
+    print("10. NO_PROXY 方括号 IPv6 清洗 OK")
+
     print("\n全部通过 ✅")
 
 
