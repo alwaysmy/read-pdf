@@ -767,13 +767,13 @@ def extract_pdfmux(pdf_path, pages=None):
 
 
 # ---------------------------------------------------------------------------
-# Layout analysis (P1: PicoDet-S_layout_3cls / PP-DocLayoutV3)
+# Layout analysis (PP-DocLayoutV3: DETR + PPHGNetV2-L，实例分割 + 阅读顺序)
 # ---------------------------------------------------------------------------
 _LAYOUT_MODEL = None
 
 
 def _get_layout_model(device="cpu"):
-    """Lazy-load PaddleX PP-DocLayoutV3 (PicoDet 版面检测)."""
+    """Lazy-load PaddleX PP-DocLayoutV3（DETR 架构 + PPHGNetV2-L 骨干，实例分割 + 阅读顺序）。"""
     global _LAYOUT_MODEL
     if _LAYOUT_MODEL is None:
         import paddlex as pdx
@@ -803,8 +803,16 @@ def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
             if len(coord) == 4:
                 bbox = [int(v) for v in coord]  # [x0, y0, x1, y1]
             else:
-                pts = box.get("polygon_points")
-                if pts is not None and len(pts) >= 4:
+                # 轮廓字段按代次兼容：V3 用 polygon_points（多点轮廓）；
+                # V4 改为直接回归四点四边形，字段名可能变化（quad/quadrilateral），
+                # 因此这里按候选顺序取第一个可用的，统一再取外接矩形
+                pts = None
+                for _key in ("polygon_points", "quad", "quadrilateral", "points"):
+                    _v = box.get(_key)
+                    if _v is not None and len(_v) >= 4:
+                        pts = _v
+                        break
+                if pts is not None:
                     xs = [float(p[0]) for p in pts]
                     ys = [float(p[1]) for p in pts]
                     bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]

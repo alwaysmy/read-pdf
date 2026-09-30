@@ -55,6 +55,36 @@ pip install pillow requests pyyaml
 ### 3.4 版面分析模型（--layout）
 - PaddleX 首次运行 `--layout` 会自动下载 PP-DocLayoutV3 到 `~/.paddlex/official_models/`，无需手动处理（需联网）。
 
+#### PP-DocLayoutV3 的事实与版本状况
+
+| 项 | 值 |
+|---|---|
+| 定位 | PaddleOCR-VL 1.5/1.6 与 GLM-OCR 的官方统一版面模块；自述为端到端版面分析 |
+| 架构 | **DETR + PPHGNetV2-L**，实例分割 + 阅读顺序预测（**不是 PicoDet 系列**） |
+| 标签 | 25 类（text / table / image / chart / formula / header / footer / seal / vertical_text 等） |
+| 发布 | 2026-01-20；关联论文 [RT-DocLayout arXiv:2606.23344](https://arxiv.org/abs/2606.23344)，ECCV 2026 收录 |
+| 参考性能 | A100 约 23.77 ms / 126 MB（厂商标称，非本机实测） |
+
+**它是当前官方主线里最新、且在列的唯一"带阅读顺序"的版面分析模型。** 官方
+`layout_analysis` 模块只列它一个；`layout_detection` 分类下的
+PP-DocLayout-L/M/S/plus-L 与 PP-DocBlockLayout 属更早一代（2025-06），
+其中 PP-DocBlockLayout 只有 1 个标签（`Region`），用于分块而非细粒度版面。
+
+> **注意**：`layout_detection` 各家模型的 mAP **不可横向比较**——官方对不同子组用了
+> 不同评估集（500~11245 张不等），已分别注明。
+
+#### V4 前瞻（尚未发布，暂不升级）
+
+PP-DocLayoutV4 已存在但未随官方 release 发布：唯一强证据是 HF Transformers
+[PR #48387](https://github.com/huggingface/transformers/pull/48387)（2026-08-28 创建，
+2026-09-21 仍 open），PR 作者注明权重仓库在官方发布前保持私有（实测 HF 搜索为空、页面 404）。
+其架构改动为：四边形替代 mask（直接回归四点，针对倾斜/透视文档）、每层解耦 head、
+双阅读顺序 head 融合。**V4 的精度指标、速度、标签体系目前均无官方数据。**
+
+- 现阶段无需升级；信号点：上述 PR 的合并状态、[PaddleOCR releases](https://github.com/PaddlePaddle/PaddleOCR/releases)
+- 代码已按代次兼容轮廓字段：`coordinate` → `polygon_points` → `quad`/`quadrilateral`/`points` 依次取用，
+  最终统一折算成外接矩形，故 V4 若改字段名不会直接崩溃。若痛点是扫描/翻拍类倾斜文档，V4 值得届时优先评估。
+
 ### 3.5 llama.cpp 本体与 CUDA 运行库（hybrid 的 llama-cpp 后端）
 
 `llama_dir` 指向 llama.cpp 的 **Windows CUDA** 构建目录（目录里要有 `llama-server.exe` 与 `ggml-cuda.dll`）。
