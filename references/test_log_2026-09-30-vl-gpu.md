@@ -246,3 +246,22 @@ python scripts/extract_pdf.py <pdf> --hybrid --pages 1 --json --output-dir <out>
 - 原始输出：`D:\ChatWorkspace\TEST_RESULTS\local_vl_manual\`（CPU 基线）、
   `local_vl_gpu\`（GPU）、`e2e_after_fix\`、`e2e_log_check\`
 - 服务日志：`%TEMP%\llama_hybrid_*.log`（含逐请求 `prompt eval time` / `eval time`）
+
+## 八、另一台机器的未同步修改（待合并记录）
+
+另一台机器（7945HX）修改了 **CPU 版面检测的硬编码**，本仓库**未同步**该修改。
+同步时的对照基线（本仓库当前状态，均未动）：
+
+| 位置 | 现状 |
+|---|---|
+| `extract_pdf.py` `_layout_device()` | 缺省回落 `"cpu"`（读 `defaults.layout_device`） |
+| `extract_pdf.py` `_get_layout_model(device="cpu")` | 默认参数 `"cpu"` |
+| `extract_pdf.py` `extract_layout(..., device="cpu")` | 默认参数 `"cpu"` |
+| `engine_config.yaml` `defaults.layout_device: "cpu"` | 跟踪默认值 |
+
+本轮在版面检测上动过的只有三处，均与设备硬编码无关（合并时留意同区域冲突）：
+注释更正（PicoDet → DETR+PPHGNetV2-L，`9cd145c`）、轮廓字段代次兼容
+（coordinate → polygon_points → quad/…，`9cd145c`）、以及 3.3/3.4 节的
+分账文档。**注意**：3.4 节实证 hybrid 管线内部版面由管线自管（`gpu:0`），
+`defaults.layout_device` 只作用于 `--layout` 独立模式——评估对方修改时应区分
+这两条路径。
