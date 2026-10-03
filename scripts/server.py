@@ -2,6 +2,7 @@
 
 架构：Flask API → subprocess 调用 extract_pdf.py（零侵入复用 CLI）。
 端点：POST /extract, POST /layout, GET /engines, GET/POST /config, GET /health
+文档读取：POST /document/open, /document/read, /document/search（仅已有 Document Package；不会触发 OCR）
 默认 http://127.0.0.1:8123（host/port 在 engine_config.yaml 的 server 段配置，仅本机）；可选 READPDF_API_KEY 做 Bearer 认证。
 """
 import json
@@ -13,6 +14,8 @@ import tempfile
 import time
 
 from flask import Flask, jsonify, request
+
+from document_reader import (DocumentReaderError, open_document, read_document, search_document)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "extract_pdf.py"
@@ -102,23 +105,29 @@ DPI_RANGE = (50, 600)
 
 def _validate_body(body):
     """校验请求体，返回 (error_msg, None) 或 (None, 规范化后的 body)."""
+    if not isinstance(body, dict):
+        return "JSON request body must be an object", None
     eng = body.get("engine", "auto")
-    if eng not in ENGINE_WHITELIST:
+    if not isinstance(eng, str) or eng not in ENGINE_WHITELIST:
         return f"engine 必须是 {sorted(ENGINE_WHITELIST)} 之一，got '{eng}'", None
     src = body.get("source")
-    if src is not None and src not in SOURCE_CHOICES:
+    if src is not None and (not isinstance(src, str) or src not in SOURCE_CHOICES):
         return f"source 必须是 {sorted(SOURCE_CHOICES)} 之一，got '{src}'", None
     dpi = body.get("dpi")
     if dpi is not None:
+        if isinstance(dpi, bool) or isinstance(dpi, (list, dict)):
+            return "dpi must be an integer, not bool or a container", None
         try:
             dpi = int(dpi)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return f"dpi 必须是整数，got '{dpi}'", None
         if not (DPI_RANGE[0] <= dpi <= DPI_RANGE[1]):
             return f"dpi 超出范围 {DPI_RANGE}（防渲染内存爆炸），got {dpi}", None
         body["dpi"] = dpi
     od = body.get("output_dir")
     if od is not None:
+        if not isinstance(od, str):
+            return "output_dir must be a string", None
         p = pathlib.Path(od)
         if p.is_absolute() and not str(p).startswith("\\\\"):
             pass  # 绝对本地路径允许（Windows UNC 排除）
@@ -150,7 +159,7 @@ def extract():
     if err:
         return jsonify({"error": err}), 400
     pdf = body.get("pdf")
-    if not pdf or not pathlib.Path(pdf).exists():
+    if not isinstance(pdf, str) or not pdf or not pathlib.Path(pdf).is_file():
         return jsonify({"error": f"pdf 不存在: {pdf}"}), 400
     args = [pdf]
     if body.get("pages"):
@@ -182,7 +191,7 @@ def layout():
     if err:
         return jsonify({"error": err}), 400
     pdf = body.get("pdf")
-    if not pdf or not pathlib.Path(pdf).exists():
+    if not isinstance(pdf, str) or not pdf or not pathlib.Path(pdf).is_file():
         return jsonify({"error": f"pdf 不存在: {pdf}"}), 400
     args = [pdf, "--layout"]
     if body.get("pages"):
@@ -201,6 +210,44 @@ def layout():
         return jsonify(result), 500
     result["time_s"] = round(time.time() - t0, 1)
     return jsonify(result)
+
+
+def _document_request(handler, fields):
+    """Read an existing package directly; no subprocess, extraction, or model work."""
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON request body must be an object"}), 400
+    extra = set(body) - set(fields)
+    if extra:
+        return jsonify({"error": f"Unknown document request fields: {', '.join(sorted(extra))}"}), 400
+    if "package_path" not in body:
+        return jsonify({"error": "package_path is required; extract the PDF first"}), 400
+    if handler is search_document and "query" not in body:
+        return jsonify({"error": "query is required"}), 400
+    try:
+        return jsonify(handler(**body))
+    except DocumentReaderError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/document/open", methods=["POST"])
+def document_open():
+    """Inspect an existing .document.json package. Does not open/extract a PDF."""
+    return _document_request(open_document, ("package_path",))
+
+
+@app.route("/document/read", methods=["POST"])
+def document_read():
+    """Return bounded text and citations while retaining full coverage/quality."""
+    return _document_request(read_document, ("package_path", "pages", "max_chars", "cursor"))
+
+
+@app.route("/document/search", methods=["POST"])
+def document_search():
+    """Search only existing package text; missing pages are explicitly disclosed."""
+    return _document_request(search_document, ("package_path", "query", "max_hits"))
 
 
 @app.route("/engines", methods=["GET"])
@@ -241,8 +288,10 @@ def config():
         })
     # POST: 写 local.yaml（校验 YAML + 危险字段白名单）
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON request body must be an object"}), 400
     content = body.get("config")
-    if not content:
+    if not isinstance(content, str) or not content:
         return jsonify({"error": "缺少 config 字段"}), 400
     try:
         import yaml

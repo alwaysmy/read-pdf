@@ -12,6 +12,11 @@ MCP 工具:
   extract_pdf(pdf, pages?, engine?, source?, dpi?, output_dir?) → PDF 提取
   layout_pdf(pdf, pages?, device?, output_dir?)                → 版面分析
   list_engines()                                               → 引擎列表
+  open_document(package_path)                                  → 已有文档包元数据
+  read_document(package_path, pages?, max_chars?, cursor?)      → 有界文本及引用
+  search_document(package_path, query, max_hits?)               → 已有文本搜索
+
+文档工具仅读取 extract_pdf 输出的 .document.json；不自动提取、OCR 或调度缺失页。
 """
 import json
 import os
@@ -23,6 +28,13 @@ import time
 from urllib.parse import urlparse
 
 import requests
+
+try:
+    from pydantic import StrictInt
+except ImportError:
+    # HTTP-only use does not require the optional MCP SDK/Pydantic dependency.
+    # Whenever FastMCP is installed, StrictInt prevents bool/string coercion.
+    StrictInt = int
 
 
 def _server_url():
@@ -165,7 +177,7 @@ def extract_pdf(pdf, pages=None, engine=None, source=None, dpi=None, output_dir=
     if "error" in result:
         return result
     # 精简返回（避免刷屏）
-    return {
+    summary = {
         "status": result.get("status"),
         "output": result.get("file"),
         "engine": result.get("engine"),
@@ -173,6 +185,12 @@ def extract_pdf(pdf, pages=None, engine=None, source=None, dpi=None, output_dir=
         "tables": result.get("total_tables"),
         "time_s": result.get("time_s"),
     }
+    # Completeness and warnings must never be hidden by the compact response.
+    for field in ("package_path", "doc_id", "revision_id", "coverage", "issues",
+                  "quality_flags", "page_statuses", "pages", "page_results"):
+        if field in result:
+            summary[field] = result[field]
+    return summary
 
 
 def layout_pdf(pdf, pages=None, device=None, output_dir=None):
@@ -204,6 +222,32 @@ def list_engines():
     return {"engines": result.get("engines", [])}
 
 
+def open_document(package_path: str):
+    """Inspect existing Document Package JSON metadata. Extract a PDF first; no OCR is run."""
+    return _post("/document/open", {"package_path": package_path})
+
+
+def read_document(package_path: str, pages: str | list[StrictInt] | None = None,
+                  max_chars: StrictInt = 8000, cursor: str | None = None):
+    """Read existing package text with citations, 1..100000 chars, full coverage/quality.
+
+    pages uses 1-based physical numbers/ranges (e.g. '1,3-5') or an integer array.
+    Follow next_cursor with the same package/pages; never automatically runs OCR.
+    """
+    return _post("/document/read", {"package_path": package_path, "pages": pages,
+                                    "max_chars": max_chars, "cursor": cursor})
+
+
+def search_document(package_path: str, query: str, max_hits: StrictInt = 20):
+    """Literal case-insensitive search of existing package text, 1..100 hits.
+
+    query is 1..256 characters; each hit has at most 320 snippet characters.
+    Coverage and unsearched pages accompany no-match results. Never runs OCR.
+    """
+    return _post("/document/search", {"package_path": package_path, "query": query,
+                                      "max_hits": max_hits})
+
+
 # ---------------------------------------------------------------------------
 # MCP 接入：优先 FastMCP，降级 mcp.run
 # ---------------------------------------------------------------------------
@@ -214,6 +258,9 @@ def main():
         mcp.add_tool(extract_pdf)
         mcp.add_tool(layout_pdf)
         mcp.add_tool(list_engines)
+        mcp.add_tool(open_document)
+        mcp.add_tool(read_document)
+        mcp.add_tool(search_document)
         mcp.run()
     except ImportError:
         # 降级：mcp SDK
@@ -237,9 +284,29 @@ def main():
                  }, "required": ["pdf"]}),
             Tool(name="list_engines", description="列出引擎与服务源",
                  inputSchema={"type": "object", "properties": {}}),
+            Tool(name="open_document", description="Inspect existing Document Package JSON; no extraction/OCR",
+                 inputSchema={"type": "object", "properties": {
+                     "package_path": {"type": "string"},
+                 }, "required": ["package_path"]}),
+            Tool(name="read_document", description="Bounded existing package text with citations and complete coverage/quality; no OCR",
+                 inputSchema={"type": "object", "properties": {
+                     "package_path": {"type": "string"},
+                     "pages": {"anyOf": [{"type": "string"}, {"type": "array", "items": {
+                         "type": "integer", "minimum": 1}}, {"type": "null"}]},
+                     "max_chars": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 8000},
+                     "cursor": {"type": ["string", "null"]},
+                 }, "required": ["package_path"]}),
+            Tool(name="search_document", description="Literal case-insensitive search of existing package text; bounded snippets, no OCR",
+                 inputSchema={"type": "object", "properties": {
+                     "package_path": {"type": "string"},
+                     "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                     "max_hits": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                 }, "required": ["package_path", "query"]}),
         ]
         HANDLERS = {
             "extract_pdf": extract_pdf, "layout_pdf": layout_pdf, "list_engines": list_engines,
+            "open_document": open_document, "read_document": read_document,
+            "search_document": search_document,
         }
 
         @server.list_tools()

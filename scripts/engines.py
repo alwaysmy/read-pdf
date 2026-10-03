@@ -82,7 +82,13 @@ def ensure_local_server(name, server_manager):
 # HTTP 调用（本地源：OpenAI 兼容）
 # ---------------------------------------------------------------------------
 def call_local(engine, src_cfg, img_path, prompt, temp=0, max_tokens=8192):
-    """POST OpenAI-compatible chat/completions to local endpoint."""
+    """POST chat/completions, retaining text and completion metadata in stats.
+
+    A token-limit completion is usable partial output, not an HTTP error. Callers
+    can inspect ``truncated`` / ``quality_flags`` to retry or flag the page while
+    still preserving its text. Metadata omitted by a compatible server stays
+    omitted rather than being inferred from token counts.
+    """
     import requests
     endpoint = src_cfg.get("endpoint")
     api_key = src_cfg.get("api_key", "")
@@ -113,7 +119,15 @@ def call_local(engine, src_cfg, img_path, prompt, temp=0, max_tokens=8192):
         )
         if resp.status_code != 200:
             return "", {"error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-        return resp.json()["choices"][0]["message"]["content"], {}
+        body = resp.json()
+        choice = body["choices"][0]
+        text = choice["message"]["content"]
+        stats = {key: body[key] for key in ("usage", "model") if key in body}
+        if "finish_reason" in choice:
+            stats["finish_reason"] = choice["finish_reason"]
+        stats["truncated"] = choice.get("finish_reason") == "length"
+        stats["quality_flags"] = ["completion_truncated"] if stats["truncated"] else []
+        return text, stats
     except Exception as e:
         return "", {"error": str(e)}
 

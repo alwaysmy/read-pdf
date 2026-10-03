@@ -1,0 +1,9 @@
+# CPU-only regression / text-layer HTTP + MCP test environment; no OCR weights needed.
+# python -m pip install -r requirements-test.txt
+PyMuPDF>=1.24
+pdfplumber>=0.11
+PyYAML>=6.0
+Pillow>=10.0
+requests>=2.31
+Flask>=3.0
+mcp>=1.0

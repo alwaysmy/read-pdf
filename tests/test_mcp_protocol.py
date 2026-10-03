@@ -43,7 +43,8 @@ def main():
     r = read_msg(proc)
     tools = [t["name"] for t in (r.get("result", {}).get("tools", []) if r else [])]
     print("2. tools/list:", tools)
-    assert "extract_pdf" in tools and "layout_pdf" in tools and "list_engines" in tools, f"工具缺失: {tools}"
+    expected = {"extract_pdf", "layout_pdf", "list_engines", "open_document", "read_document", "search_document"}
+    assert expected <= set(tools), f"工具缺失: {expected - set(tools)}"
 
     send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                 "params": {"name": "list_engines", "arguments": {}}})

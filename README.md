@@ -36,7 +36,13 @@ python scripts/server.py
 python scripts/mcp_server.py
 ```
 
-MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`。
+MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`，新增 `open_document` / `read_document` / `search_document`（读取已有 Document Package，不自动 OCR）。
+
+### 可靠性与按需读取
+
+默认提取现在逐页处理混合 PDF，缓存按源文件内容而非文件名识别；保留表格重复行/空值、OCR 截断信息和页级失败。JSON 返回 `package_path`、版本、覆盖与质量标记。可以用新工具按页、按字符预算读取，或搜索带页/块引用的片段。
+
+纯文本页的规范正文来自 PyMuPDF + pdfplumber；pdfmux 全文另存为诊断视图。旧 CLI 参数、输出便利路径和 MCP 工具保留。详见 [本阶段实现、用法与验证边界](docs/PDF_QUALITY_IMPLEMENTATION.md)。
 
 # 图像 PDF（默认 hybrid）
 python scripts/extract_pdf.py scan.pdf
