@@ -87,7 +87,13 @@ def _qwen_raw(img_paths, prompt=None):
         )
         if resp.status_code != 200:
             return "", {"error": f"HTTP {resp.status_code}"}
-        return resp.json()["choices"][0]["message"]["content"], {}
+        body = resp.json()
+        choice = body["choices"][0]
+        stats = {key: body[key] for key in ("usage", "model") if key in body}
+        stats["finish_reason"] = choice.get("finish_reason")
+        stats["truncated"] = choice.get("finish_reason") == "length"
+        stats["quality_flags"] = ["completion_truncated"] if stats["truncated"] else []
+        return choice["message"]["content"], stats
     except Exception as e:
         return "", {"error": str(e)}
 
@@ -414,6 +420,7 @@ def _ov_via_openvino(ov, img_path):
     lines, stats = _ov_lines_openvino(ov, img_path)
     if lines is None:
         return "", stats
+    stats["representation"] = "plain_text_lines"
     return "\n".join(l["text"] for l in lines), stats
 
 
@@ -463,6 +470,7 @@ def _ov_via_paddle(ov, img_path):
     lines, stats = _ov_lines_paddle(ov, img_path)
     if lines is None:
         return "", stats
+    stats["representation"] = "plain_text_lines"
     return "\n".join(l["text"] for l in lines), stats
 
 
@@ -602,7 +610,7 @@ def _ensure_hybrid_server():
 # ---------------------------------------------------------------------------
 _ORPHAN_OVERLAP = 0.7       # 行 bbox 落在块内的面积占比阈值
 _FULL_WIDTH_RATIO = 0.7     # 宽 ≥ 页宽此比例 → 通栏块（分栏边界）
-_HEADING_LEVEL = {"doc_title": "#", "title": "##", "header": "###"}
+_HEADING_LEVEL = {"doc_title": "#", "title": "##", "paragraph_title": "##", "header": "###"}
 _FIGURE_LABELS = {"figure", "image", "chart", "seal", "stamp"}
 
 
@@ -671,6 +679,8 @@ def _reading_order(blocks, page_w):
     """
     if not blocks:
         return []
+    if all(block.get("reading_order") is not None for block in blocks):
+        return sorted(blocks, key=lambda block: block["reading_order"])
     full = [b for b in blocks if (b["bbox"][2] - b["bbox"][0]) >= _FULL_WIDTH_RATIO * page_w]
     full_ids = {id(b) for b in full}
     others = [b for b in blocks if id(b) not in full_ids]
@@ -726,18 +736,67 @@ def _render_markdown(ordered, by_idx, orphans):
 
 
 def _merge_lines_with_layout(lines, blocks, img_path):
-    """整页 OCR 的行 + 版面块 → 结构化 markdown."""
-    for i, b in enumerate(blocks):
-        b["_idx"] = i
-    try:
-        from PIL import Image
-        with Image.open(img_path) as im:
-            page_w = im.size[0]
-    except Exception:
-        page_w = max((b["bbox"][2] for b in blocks), default=1)
+    """Assemble actual detected regions; reconstruct only visibly ruled cells."""
+    import cv2
+    from ruled_tables import reconstruct_table, render_table, refine_min_typ_max
+    if not any(str(line.get("text", "")).strip() for line in lines):
+        return "", {"error": "OCR produced no recognized text; layout alone cannot establish text coverage",
+                    "quality_flags": ["empty_extraction"]}
+    image = cv2.imread(str(img_path))
+    inline_regions = [dict(block) for block in blocks if block.get("label") == "inline_formula"]
+    # Inline annotations are children of text/table regions, not standalone pages
+    # of tiny formula crops. OCR lines remain in the containing block or orphans.
+    blocks = [block for block in blocks if block.get("label") != "inline_formula"]
+    for i, block in enumerate(blocks):
+        block["_idx"] = i
     by_idx, orphans = _assign_lines_to_blocks(lines, blocks)
-    text = _render_markdown(_reading_order(blocks, page_w), by_idx, orphans)
-    return text, {"layout": {"status": "ok", "blocks": len(blocks), "orphans": len(orphans)}}
+    page_w = image.shape[1] if image is not None else max((b["bbox"][2] for b in blocks), default=1)
+    ordered = _reading_order(blocks, page_w)
+    parts, records, tables, flags = [], [], [], []
+    if inline_regions:
+        flags.append("formula_structure_unverified")
+    for block in ordered:
+        label = block.get("label", "text")
+        selected = by_idx[block["_idx"]]
+        raw = "\n".join(line["text"] for line in sorted(selected, key=_line_sort_key))
+        record = {"type": label, "bbox": block["bbox"], "score": block["score"],
+                  "coordinate_space": "rendered_pixels", "reading_order": len(records),
+                  "text_raw": raw, "quality_flags": [], "region_id": block["_idx"]}
+        if label == "table":
+            table = reconstruct_table(image, block["bbox"], selected)
+            if table:
+                if "table_columns_ambiguous" in table["quality_flags"]:
+                    table = refine_min_typ_max(table, selected)
+                tables.append(table)
+                raw = render_table(table)
+                record.update(text_raw=raw, table=table)
+                record["quality_flags"].extend(table["quality_flags"])
+            else:
+                record["quality_flags"].append("table_structure_unavailable")
+                raw = "<!-- Table structure unavailable; original OCR lines follow -->\n" + raw
+        elif label in ("formula", "display_formula", "inline_formula"):
+            # Plain OCR is not a formula parser: never fabricate LaTeX delimiters.
+            record["quality_flags"].append("formula_structure_unverified")
+            raw = "<!-- Formula structure unverified; use the region image -->\n" + raw
+        elif label in _HEADING_LEVEL and raw:
+            raw = _HEADING_LEVEL[label] + " " + raw
+        flags.extend(record["quality_flags"])
+        if raw:
+            parts.append(raw)
+        if label in _CROP_LABELS:
+            parts.append(f"<!-- readpdf-region:{block['_idx']} -->")
+        records.append(record)
+    if orphans:
+        raw = "\n".join(line["text"] for line in sorted(orphans, key=_line_sort_key))
+        parts.append("<!-- Unassigned OCR lines retained -->\n" + raw)
+        records.append({"type": "unassigned_text", "bbox": None, "coordinate_space": "rendered_pixels",
+                        "reading_order": len(records), "text_raw": raw,
+                        "quality_flags": ["layout_text_unassigned"]})
+        flags.append("layout_text_unassigned")
+    return "\n\n".join(parts), {"layout": {"status": "ok", "blocks": len(blocks), "orphans": len(orphans)},
+                                 "layout_blocks": records, "structured_tables": tables,
+                                 "inline_formula_regions": inline_regions,
+                                 "quality_flags": sorted(set(flags))}
 
 
 def _hybrid_ppocrv6(img_path, rec):
@@ -783,19 +842,31 @@ def extract_pdfmux(pdf_path, pages=None):
 # Layout analysis (PP-DocLayoutV3: DETR + PPHGNetV2-L，实例分割 + 阅读顺序)
 # ---------------------------------------------------------------------------
 _LAYOUT_MODEL = None
+_LAYOUT_KEY = None
 
 
 def _get_layout_model(device="cpu"):
     """Lazy-load PaddleX PP-DocLayoutV3（DETR 架构 + PPHGNetV2-L 骨干，实例分割 + 阅读顺序）。"""
-    global _LAYOUT_MODEL
-    if _LAYOUT_MODEL is None:
-        import paddlex as pdx
-        _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3', device=device)
+    global _LAYOUT_MODEL, _LAYOUT_KEY
+    defaults = _ov_config()
+    backend = defaults.get("layout_backend", "paddle")
+    directory = defaults.get("layout_ov_dir", "")
+    key = (backend, directory, device)
+    if _LAYOUT_MODEL is None or _LAYOUT_KEY != key:
+        if backend == "openvino":
+            from doclayout_openvino import create_model
+            _LAYOUT_MODEL = create_model(directory, device=device)
+        elif backend == "paddle":
+            import paddlex as pdx
+            _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3', device=device)
+        else:
+            raise ValueError(f"Unknown layout_backend: {backend}")
+        _LAYOUT_KEY = key
     return _LAYOUT_MODEL
 
 
 # table/figure 等可裁剪元素；text/header/footer 等文本元素不裁剪
-_CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption"}
+_CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption", "display_formula"}
 
 
 def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
@@ -836,6 +907,7 @@ def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
                 "score": round(score, 3),
                 "bbox": bbox,
                 "crop": label in _CROP_LABELS,
+                "reading_order": box.get("reading_order"),
             })
         return blocks, {}
     except Exception as e:
@@ -850,26 +922,190 @@ def extract_page_text(page):
 
 
 def format_table_md(table):
-    if not table or len(table) < 1:
+    """Render every source row/cell; repeated rows and empty/zero values are data."""
+    if not table:
         return ""
-    rows = []
-    seen = set()
-    for row in table:
-        row_str = " | ".join(str(c).replace("\n", "<br>") if c else "" for c in row)
-        if row_str in seen:
-            continue
-        seen.add(row_str)
-        rows.append(row)
-    if len(rows) < 2:
-        return " | ".join(rows[0]) if rows else ""
-    header = rows[0]
-    cols = len(header)
-    sep = "|".join(["---"] * cols)
-    md = f"| {' | '.join(header)} |\n|{sep}|\n"
-    for row in rows[1:]:
-        padded = list(row) + [""] * (cols - len(row))
-        md += f"| {' | '.join(padded[:cols])} |\n"
-    return md
+    rows = [list(row) if row is not None else [] for row in table]
+    cols = max((len(row) for row in rows), default=0)
+    if not cols:
+        return ""
+    def cell(value):
+        return ("" if value is None else str(value)).replace("\\", "\\\\").replace("|", "\\|").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    lines = ["| " + " | ".join(cell(v) for v in row + [None] * (cols - len(row))) + " |"
+             for row in rows]
+    lines.insert(1, "|" + "|".join(["---"] * cols) + "|")
+    return "\n".join(lines) + "\n"
+
+
+def source_revision(pdf_path):
+    """Content identity independent of name, location, size and mtime."""
+    digest = hashlib.sha256()
+    with open(pdf_path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def classify_page(page):
+    """Cheap per-requested-page routing signals, not a claim of OCR accuracy."""
+    text = extract_page_text(page)
+    rect = page.rect
+    images = page.get_image_info()
+    area = max(rect.width * rect.height, 1)
+    image_area = sum(abs(fitz.Rect(item["bbox"]) & rect) for item in images)
+    coverage = min(image_area / area, 1.0)
+    # Sparse covers are legitimate text. Blank pages must not start an OCR model.
+    has_graphics = bool(images) or (not text and bool(page.get_drawings()))
+    blank = not text and not has_graphics
+    needs_ocr = (not text and not blank) or (len(text) < 100 and coverage >= 0.5)
+    return {"native_chars": len(text), "image_coverage": round(coverage, 4),
+            "blank": blank, "needs_ocr": needs_ocr}
+
+
+def _atomic_json(path, value):
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".readpdf-", suffix=".tmp", delete=False) as stream:
+            temp_name = stream.name
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if temp_name and os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def export_page_images(page, output_dir, revision, dpi=150):
+    """Preserve page appearance + embedded image regions using PyMuPDF only.
+
+    Page renders retain vector drawings as well as raster content. Crops are source
+    image rectangles, not a claim of semantic figure/table detection.
+    """
+    folder = pathlib.Path(output_dir) / "imgs" / revision[:16]
+    folder.mkdir(parents=True, exist_ok=True)
+    page_number = page.number + 1
+    assets = []
+    def render(rect, name, kind):
+        path = folder / name
+        if not path.is_file() or not path.stat().st_size:
+            with tempfile.NamedTemporaryFile(dir=folder, suffix=".png", delete=False) as tmp:
+                temporary = pathlib.Path(tmp.name)
+            try:
+                page.get_pixmap(clip=rect, dpi=dpi, alpha=False).save(temporary)
+                os.replace(temporary, path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        assets.append({"type": kind, "page": page_number, "path": str(path),
+                       "relative_path": path.relative_to(output_dir).as_posix(),
+                       "bbox": list(rect), "coordinate_space": "rotated_pdf_points", "dpi": dpi})
+    render(page.rect, f"page-{page_number:04d}-{dpi}dpi.png", "source_page")
+    for index, info in enumerate(page.get_image_info(), 1):
+        rect = (fitz.Rect(info["bbox"]) * page.rotation_matrix) & page.rect
+        if rect.is_empty or abs(rect) / max(abs(page.rect), 1) >= 0.9:
+            continue  # A scan is already retained as the source-page render.
+        render(rect, f"page-{page_number:04d}-image-{index:03d}-{dpi}dpi.png", "embedded_image")
+    return assets
+
+
+def export_layout_regions(source_image, output_dir, revision, page_number, dpi, blocks):
+    from PIL import Image
+    folder = pathlib.Path(output_dir) / "imgs" / revision[:16]
+    folder.mkdir(parents=True, exist_ok=True)
+    assets = []
+    with Image.open(source_image) as image:
+        for block in blocks:
+            if block["type"] not in _CROP_LABELS or not block.get("bbox"):
+                continue
+            x0, y0, x1, y1 = block["bbox"]
+            rect = [max(0, int(x0) - 3), max(0, int(y0) - 3), min(image.width, int(x1) + 3), min(image.height, int(y1) + 3)]
+            if rect[0] >= rect[2] or rect[1] >= rect[3]:
+                continue
+            filename = f"page-{page_number:04d}-region-{block['region_id']:03d}-{block['type']}-{dpi}dpi.png"
+            path = folder / filename
+            image.crop(rect).save(path)
+            relative = path.relative_to(output_dir).as_posix()
+            block["crop_ref"] = relative
+            assets.append({"type": "layout_region", "label": block["type"], "page": page_number,
+                           "path": str(path), "relative_path": relative, "bbox": rect,
+                           "coordinate_space": "rendered_pixels", "dpi": dpi,
+                           "region_id": block["region_id"]})
+    return assets
+
+
+def _page_quality(text, stats, detection, engine):
+    flags = list(stats.get("quality_flags") or [])
+    if stats.get("truncated") or stats.get("finish_reason") == "length":
+        flags.append("completion_truncated")
+    if "°℃" in text or "°℉" in text:
+        flags.append("suspicious_unit_symbol")
+    if stats.get("representation") == "plain_text_lines":
+        flags.append("structure_unavailable")
+    if (stats.get("layout") or {}).get("status") == "unavailable":
+        flags.append("layout_unavailable")
+    if stats.get("error"):
+        flags.append("extraction_error")
+    if not text.strip() and not (engine == "text" and detection["blank"]):
+        flags.append("empty_extraction")
+    if engine != "text" and text.strip() and len(text.strip()) < 30:
+        flags.append("low_content")
+    flags = sorted(set(flags))
+    if stats.get("error") or "empty_extraction" in flags:
+        status = "failed"
+    elif flags:
+        status = "needs_review"
+    elif engine == "text" and detection["blank"]:
+        status = "blank"
+    else:
+        status = "ok"
+    return flags, status
+
+
+def _document_package(pdf_path, revision, doc, requested, pages, pipeline, wall_time):
+    processed = [p["page"] for p in pages if p["status"] != "failed"
+                 and "audit_batch_unaligned" not in p["quality_flags"]]
+    failed = [p["page"] for p in pages if p["status"] == "failed"]
+    flags = sorted({flag for page in pages for flag in page["quality_flags"]})
+    packaged = []
+    for item in pages:
+        page = doc[item["page"] - 1]
+        method = "native_text" if item["engine"] == "text" else "ocr"
+        block_id = f"{revision[:16]}:{pipeline}:p{item['page']}:b1"
+        record = dict(item)
+        record.update(physical_page=item["page"], width=page.rect.width, height=page.rect.height,
+                      rotation=page.rotation, coordinate_space="pdf_points",
+                      printed_label=page.get_label() or None,
+                      provenance={"revision_id": revision, "physical_page": item["page"],
+                                  "engine": item["engine"], "source": item.get("source"),
+                                  "recognizer": item.get("recognizer"), "model": item.get("model")},
+                      blocks=[{"block_id": block_id, "type": "page_text", "reading_order": 0,
+                               "text_raw": item["text_raw"], "bbox": None,
+                               "extraction_method": method, "quality_flags": item["quality_flags"],
+                               "validation_state": "unverified"}])
+        for index, cells in enumerate(item.get("table_data") or [], 1):
+            record["blocks"].append({"block_id": f"{revision[:16]}:{pipeline}:p{item['page']}:t{index}",
+                                     "type": "table", "reading_order": index,
+                                     "text_raw": format_table_md(cells), "cells": cells, "bbox": None,
+                                     "extraction_method": "pdfplumber", "quality_flags": item["quality_flags"],
+                                     "validation_state": "unverified"})
+        if item.get("layout_blocks"):
+            record["blocks"] = [{"block_id": f"{revision[:16]}:{pipeline}:p{item['page']}:r{index}",
+                                 "extraction_method": "layout_and_ocr", "validation_state": "unverified",
+                                 **block} for index, block in enumerate(item["layout_blocks"])]
+            record.pop("layout_blocks", None)
+        packaged.append(record)
+    return {"schema_version": "1.0", "doc_id": revision, "revision_id": revision,
+            "source": {"filename": pdf_path.name, "sha256": revision},
+            "total_pages": len(doc), "status": "warn" if flags else "ok", "quality_flags": flags,
+            "coverage": {"requested_pages": [p + 1 for p in requested],
+                         "processed_pages": processed, "failed_pages": failed,
+                         "unprocessed_pages": sorted(set(range(1, len(doc) + 1)) - set(processed))},
+            "pages": packaged, "run": {"pipeline_signature": pipeline, "pipeline_version": _PIPELINE_VERSION,
+                                         "wall_time_s": round(wall_time, 4)}}
 
 
 # ---------------------------------------------------------------------------
@@ -896,28 +1132,28 @@ def make_output_folder(pdf_name, suffix, output_dir=None, page_suffix=""):
 # Extraction cache (P3: Kimi 抽取-注入解耦 — 缓存复用避免重复 OCR)
 # ---------------------------------------------------------------------------
 def cache_get(cache_dir, key):
-    """Read cached extraction if exists, else None."""
-    path = cache_dir / f"{key}.txt"
-    if path.exists():
-        try:
-            return path.read_text(encoding="utf-8")
-        except Exception:
-            return None
+    """Read a versioned text+provenance record. Legacy/unparseable cache is a miss."""
+    try:
+        value = json.loads((pathlib.Path(cache_dir) / f"{key}.json").read_text(encoding="utf-8"))
+        if (value.get("schema_version") == 2 and isinstance(value.get("text"), str)
+                and isinstance(value.get("stats"), dict)):
+            return value["text"], value["stats"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     return None
 
 
-def cache_put(cache_dir, key, text):
-    """Write extraction result to cache (timestamps in filename to avoid overwrites)."""
+def cache_put(cache_dir, key, text, stats=None):
+    """Atomically publish text and its quality/provenance together."""
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path = cache_dir / f"{key}.txt"
-        path.write_text(text, encoding="utf-8")
+        _atomic_json(pathlib.Path(cache_dir) / f"{key}.json",
+                     {"schema_version": 2, "text": text, "stats": stats or {}})
         return True
-    except Exception:
+    except (OSError, TypeError, ValueError):
         return False
 
 
-_PIPELINE_VERSION = 1  # 识别/合并行为改变时必须 +1（归块算法、预处理、输出格式等）
+_PIPELINE_VERSION = 5  # real CPU layout, ruled cells, nested-formula-safe assembly
 
 
 def _engine_model_tag(engine):
@@ -954,10 +1190,42 @@ def _pipeline_signature(engine, dpi, source):
     if engine == "ov":
         parts["backend"] = _ov_backend()
         parts["tier"] = _ov_tier()
-    elif engine == "hybrid":
-        parts.update(_hybrid_recognizer())
+    elif engine == "hybrid" and source != "cloud":
+        try:
+            parts.update(_hybrid_recognizer())
+        except RuntimeError as error:
+            # Initialization below records a page failure; retain native pages already read.
+            parts["backend_resolution_error"] = str(error)
     elif engine in ("glm", "dsocr", "llama"):
         parts["model"] = _engine_model_tag(engine)
+    # Include effective prompt, token budget, endpoint/model/preprocessing options.
+    # Secret values are never serialized into provenance or diagnostic output.
+    def public_config(value):
+        if isinstance(value, dict):
+            return {k: public_config(v) for k, v in value.items()
+                    if not any(secret in k.lower() for secret in ("key", "token", "password", "secret"))}
+        if isinstance(value, list):
+            return [public_config(v) for v in value]
+        return value
+    try:
+        import engines as eng
+        parts["defaults"] = public_config(eng.load_config().get("defaults") or {})
+        if parts["defaults"].get("layout_backend") == "openvino":
+            directory = pathlib.Path(parts["defaults"].get("layout_ov_dir") or ".")
+            parts["layout_files"] = {}
+            for filename in ("inference.onnx", "inference.yml"):
+                path = directory / filename
+                if path.is_file():
+                    stat = path.stat()
+                    parts["layout_files"][filename] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        name = "paddle_vl" if engine == "hybrid" and source == "cloud" else {"llama": "hybrid", "audit": "qwen"}.get(engine, engine)
+        config, actual_source = eng.get_engine(name, source)
+        parts["config"] = public_config({k: v for k, v in config.items() if k != "sources"})
+        # max_tokens affects content, though credentials named token do not.
+        parts["max_tokens"] = config.get("max_tokens")
+        parts["source_config"] = public_config(config["sources"][actual_source])
+    except KeyError:
+        pass
     blob = json.dumps(parts, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
@@ -981,6 +1249,7 @@ def parse_args():
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
     p.add_argument("--html", action="store_true", help="Same as --audit (more intuitive name)")
     p.add_argument("--no-table", action="store_true", help="Skip pdfplumber table extraction")
+    p.add_argument("--no-images", action="store_true", help="Skip source-page PNGs and embedded-image Markdown links")
     p.add_argument("--pdfmux", action="store_true", help="Use pdfmux for text PDF structure (default: auto)")
     p.add_argument("--no-pdfmux", action="store_true", help="Disable pdfmux for text PDF")
     p.add_argument("--text-only", action="store_true", help="Text-only mode: force text engine, print bare page text to stdout (form-feed delimited, pdftotext-compatible)")
@@ -1023,8 +1292,23 @@ def main():
         except ImportError:
             pass
 
-    doc = fitz.open(str(pdf_path))
+    if not 50 <= args.dpi <= 600:
+        print("ERROR: dpi must be between 50 and 600", flush=True)
+        sys.exit(1)
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception as error:
+        print(f"ERROR: cannot open PDF: {error}", flush=True)
+        sys.exit(1)
+    if doc.needs_pass:
+        doc.close()
+        print("ERROR: PDF is password-protected; provide an unlocked copy", flush=True)
+        sys.exit(1)
     total_pages = len(doc)
+    if not total_pages:
+        doc.close()
+        print("ERROR: PDF contains no pages", flush=True)
+        sys.exit(1)
 
     if args.pages:
         # Support comma-separated ranges: "5-10,20-25" or "3,7,15-18"
@@ -1088,19 +1372,16 @@ def main():
     else:
         page_suffix = ""
 
+    revision = source_revision(pdf_path)
+    run_start = time.monotonic()
     # Detect text vs image
-    detection_info = {"method": "chars_per_page", "threshold": 100}
-    if args.force_ocr:
-        use_ocr = True
-        detection_info["forced"] = True
-    else:
-        sample_size = min(3, total_pages)
-        sample_chars = sum(len(doc[i].get_text().strip()) for i in range(sample_size))
-        avg_chars = sample_chars / sample_size
-        use_ocr = avg_chars < 100
-        detection_info["avg_chars"] = round(avg_chars, 0)
-        detection_info["sample_size"] = sample_size
-        detection_info["is_image_pdf"] = use_ocr
+    page_detection = {p: classify_page(doc[p]) for p in page_nums}
+    use_ocr = args.force_ocr or any(d["needs_ocr"] for d in page_detection.values())
+    detection_info = {"method": "per_page_text_and_image_signals", "threshold": 100,
+                      "forced": args.force_ocr,
+                      "pages": [{"page": p + 1, **page_detection[p]} for p in page_nums]}
+    explicit_ocr = any((args.force_ocr, args.audit, args.html, args.hybrid, args.vl,
+                        args.glm, args.dsocr, args.llama, args.ov))
 
     # Determine engine + ensure servers
     # 前置校验：--source cloud 只对 hybrid（走 paddle_vl）有效；glm/dsocr 无云源
@@ -1111,27 +1392,21 @@ def main():
         engine = "text"
     elif args.audit or args.html:
         engine = "audit"
-        ensure_server("qwen")
     elif args.hybrid:
         engine = "hybrid"
-        _ensure_hybrid_server()  # 仅当识别后端解析为 llama-cpp 时才需要 llama-server
     elif args.vl:
         engine = "vl"
         print("Engine: PaddleOCRVL (native, ~84s/page)", flush=True)
     elif args.glm:
         engine = "glm"
-        ensure_server("glm")
     elif args.dsocr:
         engine = "dsocr"
-        ensure_server("dsocr")
     elif args.llama:
         engine = "llama"
-        ensure_server("hybrid")  # deprecated alias → hybrid engine
     elif args.ov:
         engine = "ov"  # 本地 PP-OCRv6，无需 ensure_server
     elif use_ocr:
         engine = "hybrid"  # 默认：hybrid（版面检测 + 识别后端，后端按配置解析）
-        _ensure_hybrid_server()
     else:
         engine = "text"
 
@@ -1225,253 +1500,246 @@ def main():
             print(json.dumps(layout_result, ensure_ascii=False, indent=2), flush=True)
         sys.exit(1 if layout_errors else 0)
 
-    # --- Text path ---
-    if engine == "text":
-        use_plumber = not args.no_table
-        use_pdfmux = not args.no_pdfmux
-        total_tables = 0
-        out_folder, out_path, _unused_imgs = make_output_folder(pdf_path.stem, "md", args.output_dir, page_suffix)
-        pages_data = []
-
-        # Extract pdfmux content for selected pages
-        pdfmux_content = ""
-        if use_pdfmux:
-            try:
-                if args.pages:
-                    # Create sub-PDF for selected pages
-                    sub_doc = fitz.open()
-                    for p in page_nums:
-                        sub_doc.insert_pdf(doc, from_page=p, to_page=p)
-                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                        sub_path = tmp.name
-                    sub_doc.save(sub_path)
-                    sub_doc.close()
-                    pdfmux_content, _unused = extract_pdfmux(sub_path)
-                    try:
-                        os.unlink(sub_path)
-                    except Exception:
-                        pass
-                else:
-                    pdfmux_content, _unused = extract_pdfmux(pdf_path)
-            except Exception:
-                pass
-
-        with open(str(out_path), "w", encoding="utf-8") as f:
-            if pdfmux_content:
-                f.write("<!-- PDFMUX OUTPUT (structured, from text layer) -->\n\n")
-                f.write(pdfmux_content)
-                f.write("\n\n<!-- PYMUPDF + PDFPLUMBER REFERENCE -->\n")
-
-            for idx, page_num in enumerate(page_nums):
-                t0 = time.time()
-                page = doc[page_num]
-                text = extract_page_text(page)
-                f.write(f"\n\n<!-- PAGE {page_num + 1} -->\n\n")
-                f.write(text)
-
-                tables_found = 0
-                if use_plumber:
-                    try:
-                        import pdfplumber
-                        with pdfplumber.open(str(pdf_path)) as p:
-                            tables = p.pages[page_num].extract_tables()
-                        if tables:
-                            f.write("\n\n[TABLES]\n\n")
-                            for t in tables:
-                                f.write(format_table_md(t))
-                                f.write("\n")
-                            tables_found = len(tables)
-                            total_tables += tables_found
-                    except Exception:
-                        pass
-
-                dt = time.time() - t0
-                pages_data.append({
-                    "page": page_num + 1,
-                    "engine": "text",
-                    "time": round(dt, 1),
-                    "chars": len(text),
-                    "tables": tables_found,
-                })
-
-                progress = (idx + 1) * 100 // requested_pages
-                if progress % 10 == 0 or progress == 100:
-                    print(f"  {progress}% ({idx + 1}/{requested_pages})", flush=True)
-
-        doc.close()
-        result = {"status": "ok", "file": str(out_path), "size_bytes": out_path.stat().st_size,
-                  "total_tables": total_tables, "pages": pages_data}
-        if args.json:
-            print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
-        else:
-            print(f"DONE: {out_path.stat().st_size} bytes, {total_tables} tables  |  {out_path}", flush=True)
-        return
-
-    # --- Image/OCR path ---
-    if engine == "glm":
-        extract_fn = extract_glm
-        suffix = "md"
-    elif engine == "dsocr":
-        extract_fn = extract_dsocr
-        suffix = "md"
-    elif engine == "vl":
-        extract_fn = extract_paddle_vl
-        suffix = "md"
-    elif engine == "llama":
-        extract_fn = extract_llama
-        suffix = "md"
-    elif engine == "hybrid":
-        if args.source == "cloud":
-            # --source cloud: hybrid 切到云端 PaddleOCR-VL（同款模型 job 模式）
-            extract_fn = lambda img, source=None: _engines_call("paddle_vl", img, source="cloud")
-        else:
-            extract_fn = extract_hybrid
-        suffix = "md"
-    elif engine == "audit":
-        extract_fn = extract_qwen
-        suffix = "html"
-    elif engine == "ov":
-        extract_fn = extract_ov
-        suffix = "md"
-
-    # 解析生效源（供缓存 key 与校验用）
-    effective_source = args.source
-    if engine in ("hybrid", "llama") and args.source == "cloud":
-        effective_source = "cloud"  # hybrid cloud 走 paddle_vl（云）
-    elif engine in ("glm", "dsocr", "hybrid") and args.source is None:
-        try:
-            import engines as _eng
-            _, effective_source = _eng.get_engine(engine, None)
-        except KeyError:
-            effective_source = "local"
-
+    # Unified per-page extraction: auto keeps good native text, OCRs only flagged pages.
+    suffix = "html" if engine == "audit" else "md"
     out_folder, out_path, _unused_imgs = make_output_folder(pdf_path.stem, suffix, args.output_dir, page_suffix)
-    pages_data = []
-
-    page_nums = sorted(page_nums)  # already a set from comma parsing, or range
-    batch_size = len(page_nums) if (engine == "audit" and args.batch) else 1
+    pages_data, issues, unaligned_candidates = [], [], []
+    total_tables = 0
+    started = False
+    signatures = {}
+    effective_source = args.source or "local"
+    if engine in ("glm", "dsocr", "hybrid", "llama"):
+        import engines as _eng
+        name = "hybrid" if engine == "llama" else engine
+        _, effective_source = _eng.get_engine(name, args.source)
+    extractors = {"glm": extract_glm, "dsocr": extract_dsocr, "vl": extract_paddle_vl,
+                  "llama": extract_llama, "hybrid": extract_hybrid,
+                  "audit": extract_qwen, "ov": extract_ov}
+    if engine == "hybrid" and effective_source == "cloud":
+        extractors["hybrid"] = lambda img, source=None: _engines_call("paddle_vl", img, source="cloud")
+    cache_dir = out_folder / ".cache"
+    batch_size = len(page_nums) if engine == "audit" and args.batch else 1
     if args.batch and engine != "audit":
         print(f"WARNING: --batch is only effective with --audit, ignored for {engine}", flush=True)
 
-    with open(str(out_path), "w", encoding="utf-8") as f:
-        i = 0
-        while i < len(page_nums):
-            # Collect batch_size pages
-            batch = page_nums[i:i + batch_size]
-            tmp_paths = []
-            try:
-                for page_num in batch:
-                    page = doc[page_num]
-                    pix = page.get_pixmap(dpi=args.dpi)
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                        tmp_path = tmp.name
-                    pix.save(tmp_path)
-                    tmp_paths.append(tmp_path)
-
-                # Extract batch (with cache if enabled)
-                use_cache = not args.no_cache and not args.refresh_cache
-                cache_dir = None
-                # --refresh-cache: 跳过读取但仍写回新结果（刷新缓存语义）
-                if not args.no_cache and engine != "audit":
-                    cache_dir = out_folder / ".cache"
-                if len(batch) > 1:
-                    # Multi-page (audit) — no cache; 空输出重试（与单页一致）
-                    text, stats = "", {}
-                    for attempt in range(3):
-                        t0 = time.time()
-                        text, stats = extract_qwen_multi(tmp_paths)
-                        dt = time.time() - t0
-                        if text:
-                            break
-                        if attempt < 2:
-                            time.sleep(2)
+    # Each run owns its writer, so same-name concurrent requests cannot mix content.
+    with tempfile.NamedTemporaryFile(dir=out_folder, prefix=".readpdf-output-", suffix=".tmp", delete=False) as tmp:
+        run_output_path = pathlib.Path(tmp.name)
+    with open(run_output_path, "w", encoding="utf-8") as output:
+        for offset in range(0, len(page_nums), batch_size):
+            batch = page_nums[offset:offset + batch_size]
+            page_num = batch[0]
+            page = doc[page_num]
+            actual = engine if explicit_ocr or page_detection[page_num]["needs_ocr"] else "text"
+            t0 = time.monotonic()
+            stats, tables, text = {}, [], ""
+            images_by_page, image_errors = {}, {}
+            for pn in batch:
+                try:
+                    images_by_page[pn] = ([] if args.no_images else
+                                         export_page_images(doc[pn], out_folder, revision, args.dpi))
+                except Exception as error:
+                    images_by_page[pn] = []
+                    image_errors[pn] = str(error)
+            if actual == "text":
+                text = extract_page_text(page)
+                if not args.no_table:
+                    try:
+                        import pdfplumber
+                        with pdfplumber.open(str(pdf_path)) as plumber:
+                            tables = plumber.pages[page_num].extract_tables() or []
+                    except Exception as error:
+                        stats["quality_flags"] = ["table_extraction_failed"]
+                        stats["table_error"] = str(error)
+                total_tables += len(tables)
+            else:
+                if actual not in signatures:
+                    signatures[actual] = _pipeline_signature(actual, args.dpi, effective_source)
+                key = f"{revision}_p{page_num+1}_{signatures[actual]}"
+                cached = (cache_get(cache_dir, key) if not args.no_cache and not args.refresh_cache
+                          and actual != "audit" else None)
+                if cached is not None:
+                    text, stats = cached
+                    stats = dict(stats, cache="hit")
                 else:
-                    page_num = batch[0]
-                    # 缓存身份 = 文件+页+引擎+dpi + pipeline 指纹（实际生效的后端/模型/档位）。
-                    # 只写 engine+dpi 时，换后端后仍会命中旧结果（见 _pipeline_signature）。
-                    sig = _pipeline_signature(engine, args.dpi, effective_source)
-                    key = f"{pdf_path.stem}_p{page_num+1}_{engine}_d{args.dpi}_{sig}"
-                    cached = cache_get(cache_dir, key) if (use_cache and cache_dir) else None
-                    if cached is not None:
-                        text, stats = cached, {"cache": "hit"}
-                        dt = 0.0
-                    else:
-                        text, stats = "", {}
+                    tmp_paths, cleanup_paths = [], []
+                    try:
+                        if not started:
+                            if effective_source != "cloud":
+                                if actual == "hybrid":
+                                    _ensure_hybrid_server()
+                                elif actual in ("glm", "dsocr", "llama", "audit"):
+                                    ensure_server({"llama": "hybrid", "audit": "qwen"}.get(actual, actual))
+                            started = True
+                        for pn in batch:
+                            source_image = next((asset["path"] for asset in images_by_page[pn]
+                                                 if asset["type"] == "source_page"), None)
+                            if source_image:
+                                tmp_paths.append(source_image)
+                            else:
+                                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                                    tmp_paths.append(tmp.name)
+                                    cleanup_paths.append(tmp.name)
+                                doc[pn].get_pixmap(dpi=args.dpi).save(tmp_paths[-1])
                         for attempt in range(3):
-                            t0 = time.time()
-                            text, stats = extract_fn(tmp_paths[0], source=args.source)
-                            dt = time.time() - t0
-                            if text:
+                            if len(batch) > 1:
+                                text, stats = extract_qwen_multi(tmp_paths)
+                            elif actual == "vl":
+                                text, stats = extractors[actual](tmp_paths[0])
+                            else:
+                                text, stats = extractors[actual](tmp_paths[0], source=effective_source)
+                            text = text or ""
+                            if text.strip() or stats.get("error"):
                                 break
                             if attempt < 2:
                                 time.sleep(2)
-                        if text and cache_dir:
-                            cache_put(cache_dir, key, text)
-            finally:
-                for tp in tmp_paths:
-                    try:
-                        os.unlink(tp)
-                    except Exception:
-                        pass
+                        if text.strip() and not stats.get("error") and not args.no_cache and actual != "audit":
+                            if not cache_put(cache_dir, key, text, stats):
+                                stats.setdefault("quality_flags", []).append("cache_write_failed")
+                    except Exception as error:
+                        text, stats = "", {"error": f"{type(error).__name__}: {error}"}
+                    finally:
+                        for temp_path in cleanup_paths:
+                            try:
+                                os.unlink(temp_path)
+                            except OSError:
+                                pass
+            if stats.get("layout_blocks") and len(batch) == 1:
+                import copy
+                stats = copy.deepcopy(stats)
+                try:
+                    source_image = next((asset["path"] for asset in images_by_page[page_num]
+                                         if asset["type"] == "source_page"), None)
+                    regions = (export_layout_regions(source_image, out_folder, revision, page_num + 1,
+                                                     args.dpi, stats["layout_blocks"])
+                               if source_image and not args.no_images else [])
+                    images_by_page[page_num].extend(regions)
+                except Exception as error:
+                    regions = []
+                    image_errors[page_num] = str(error)
+                for block in stats["layout_blocks"]:
+                    region_id = block.get("region_id")
+                    asset = next((asset for asset in regions if asset["region_id"] == region_id), None)
+                    link = f"![{block['type']}, page {page_num+1}](<{asset['relative_path']}>)" if asset else ""
+                    text = text.replace(f"<!-- readpdf-region:{region_id} -->", link)
+                tables = [table["matrix"] for table in stats.get("structured_tables", [])]
+                total_tables += len(tables)
+            elapsed = time.monotonic() - t0
+            label = f"PAGES {batch[0]+1}-{batch[-1]+1}" if len(batch) > 1 else f"PAGE {page_num+1}"
+            output.write(f"\n\n<!-- {label} -->\n\n{text}")
+            if tables and actual == "text":
+                output.write("\n\n[TABLES]\n\n" + "\n".join(format_table_md(t) for t in tables))
+            for pn in batch:
+                for asset in images_by_page[pn]:
+                    if asset["type"] == "layout_region":
+                        continue  # Already placed at its detected reading-order position.
+                    relative = asset["relative_path"]
+                    if suffix == "html":
+                        from html import escape
+                        if asset["type"] == "source_page":
+                            output.write(f'\n<p><a href="{escape(relative)}">Source page {pn+1}</a></p>')
+                        else:
+                            output.write(f'\n<img src="{escape(relative)}" alt="Embedded image, page {pn+1}">')
+                    elif asset["type"] == "source_page":
+                        output.write(f"\n\n[Source page {pn+1}](<{relative}>)")
+                    else:
+                        output.write(f"\n\n![Embedded image, page {pn+1}](<{relative}>)")
+            output.flush()
+            if len(batch) > 1:
+                unaligned_candidates.append({"source_pages": [pn + 1 for pn in batch],
+                                             "text_raw": text, "engine": actual,
+                                             "validation_state": "unverified",
+                                             "quality_flags": ["audit_batch_unaligned"]})
+            for pn in batch:
+                page_stats = dict(stats)
+                page_stats["quality_flags"] = list(stats.get("quality_flags") or [])
+                if pn in image_errors:
+                    page_stats["quality_flags"].append("image_export_failed")
+                    page_stats["image_error"] = image_errors[pn]
+                if len(batch) > 1:
+                    page_stats["quality_flags"].append("audit_batch_unaligned")
+                flags, status = _page_quality(text, page_stats, page_detection[pn], actual)
+                record = {"page": pn + 1, "engine": actual, "source": effective_source if actual != "text" else None,
+                          "time": round(elapsed / len(batch), 4), "chars": len(text) // len(batch),
+                          "tables": len(tables), "table_data": tables, "images": images_by_page[pn],
+                          # Multi-page audit is one candidate; do not duplicate it as each page's truth.
+                          "text_raw": text if len(batch) == 1 else "",
+                          **page_stats, "quality_flags": flags, "status": status}
+                if len(batch) > 1:
+                    record["source_pages"] = [p + 1 for p in batch]
+                pages_data.append(record)
+                issues.extend(f"page {pn+1}: {flag}" for flag in flags)
+                if record.get("error"):
+                    issues.append(f"page {pn+1}: {record['error']}")
+            print(f"  {(offset + len(batch)) * 100 // requested_pages}% ({offset + len(batch)}/{requested_pages})", flush=True)
 
-            if text:
-                page_label = f"<!-- PAGES {batch[0]+1}-{batch[-1]+1} -->" if len(batch) > 1 else f"<!-- PAGE {batch[0]+1} -->"
-                f.write(f"\n\n{page_label}\n\n")
-                f.write(text)
-                f.flush()
-
-            for page_num in batch:
-                page_info = {
-                    "page": page_num + 1,
-                    "engine": engine,
-                    "time": round(dt / len(batch), 1),
-                    "chars": len(text) // len(batch),
-                }
-                if stats.get("confidence"):
-                    page_info["confidence"] = stats["confidence"]
-                if stats.get("error"):
-                    page_info["error"] = stats["error"]
-                if stats.get("cache"):
-                    page_info["cache"] = "hit"
-                if stats.get("recognizer"):
-                    page_info["recognizer"] = stats["recognizer"]
-                if stats.get("layout"):
-                    page_info["layout"] = stats["layout"]
-                pages_data.append(page_info)
-
-            progress = (i + len(batch)) * 100 // requested_pages
-            print(f"  {progress}% ({i + len(batch)}/{requested_pages})", flush=True)
-            i += len(batch)
-
+    # Keep optional pdfmux as an explicitly separate diagnostic artifact, not duplicate canonical text.
+    diagnostics = []
+    if engine == "text" and not args.no_pdfmux:
+        sub_path = None
+        try:
+            if args.pages:
+                with fitz.open() as subset:
+                    for pn in page_nums:
+                        subset.insert_pdf(doc, from_page=pn, to_page=pn)
+                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                        sub_path = tmp.name
+                    subset.save(sub_path)
+            mux_text, mux_stats = extract_pdfmux(sub_path or pdf_path)
+            if mux_text:
+                mux_path = out_path.with_suffix(f".{revision[:16]}.pdfmux.md")
+                mux_path.write_text(mux_text, encoding="utf-8")
+                diagnostics.append({"type": "pdfmux", "path": str(mux_path)})
+            elif mux_stats.get("error"):
+                diagnostics.append({"type": "pdfmux", "error": mux_stats["error"]})
+        except Exception as error:
+            diagnostics.append({"type": "pdfmux", "error": str(error)})
+        finally:
+            if sub_path:
+                try:
+                    os.unlink(sub_path)
+                except OSError:
+                    pass
+    signatures["text"] = f"native-v{_PIPELINE_VERSION}-tables-{not args.no_table}"
+    signatures["images"] = "disabled" if args.no_images else f"source-and-crops-{args.dpi}dpi"
+    pipeline = hashlib.sha256(json.dumps(signatures, sort_keys=True).encode()).hexdigest()[:16]
+    package = _document_package(pdf_path, revision, doc, page_nums, pages_data, pipeline,
+                                time.monotonic() - run_start)
+    snapshot_path = out_path.with_suffix(f".{revision[:16]}.{pipeline}.{suffix}")
+    os.replace(run_output_path, snapshot_path)
+    # Preserve the historical CLI output name as an explicitly mutable convenience alias.
+    import shutil
+    with tempfile.NamedTemporaryFile(dir=out_folder, prefix=".readpdf-alias-", suffix=".tmp", delete=False) as tmp:
+        alias_temp = pathlib.Path(tmp.name)
+    try:
+        shutil.copyfile(snapshot_path, alias_temp)
+        os.replace(alias_temp, out_path)
+    finally:
+        if alias_temp.exists():
+            alias_temp.unlink()
+    package["issues"] = issues
+    package["unaligned_candidates"] = unaligned_candidates
+    image_artifacts = [asset for page in pages_data for asset in page.get("images", [])]
+    package["artifacts"] = [{"type": "markdown" if suffix == "md" else "html", "path": str(snapshot_path)},
+                             *image_artifacts, *diagnostics]
+    package["compatibility_output"] = {"path": str(out_path), "mutable": True}
+    package_path = out_path.with_suffix(f".{revision[:16]}.{pipeline}.document.json")
+    _atomic_json(package_path, package)
     doc.close()
-
-    # Collect issues
-    issues = []
-    for pd_page in pages_data:
-        if pd_page["chars"] < 30:
-            issues.append(f"page {pd_page['page']}: low content ({pd_page['chars']} chars)")
-        if pd_page.get("error"):
-            issues.append(f"page {pd_page['page']}: {pd_page['error']}")
-
-    out_size = out_path.stat().st_size
-    total_time = sum(p["time"] for p in pages_data)
-
-    result = {
-        "status": "ok" if not issues else "warn",
-        "file": str(out_path),
-        "size_bytes": out_size,
-        "engine": engine,
-        "detection": detection_info,
-        "total_time": round(total_time, 1),
-        "pages": pages_data,
-    }
-    if issues:
-        result["issues"] = issues
-
+    result = {"status": package["status"], "file": str(out_path), "size_bytes": out_path.stat().st_size,
+              "engine": engine, "detection": detection_info, "total_tables": total_tables,
+              "total_time": round(sum(p["time"] for p in pages_data), 4),
+              "wall_time_s": package["run"]["wall_time_s"],
+              "pages": [{k: v for k, v in p.items() if k not in ("text_raw", "table_data", "layout_blocks", "structured_tables", "inline_formula_regions")} for p in pages_data],
+              "package_path": str(package_path), "doc_id": revision, "revision_id": revision,
+              "images": image_artifacts,
+              "page_statuses": [{"physical_page": p["page"], "status": p["status"],
+                                  "quality_flags": p["quality_flags"]} for p in pages_data],
+              "coverage": package["coverage"], "quality_flags": package["quality_flags"], "issues": issues}
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     else:
-        print(f"DONE: {out_size} bytes  |  {engine}  |  {out_path}", flush=True)
+        print(f"DONE: {out_path.stat().st_size} bytes  |  {engine}  |  {out_path}", flush=True)
         for issue in issues:
             print(f"  {issue}", flush=True)
 

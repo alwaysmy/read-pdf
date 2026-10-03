@@ -36,10 +36,10 @@ BASE = default_base()
 MODELS = {
     "v6": {
         "name": "PP-OCRv6 small",
-        "det": BASE + r"\PP-OCRv6_small_det_onnx\inference.onnx",
+        "det": str(pathlib.Path(BASE) / "PP-OCRv6_small_det_onnx" / "inference.onnx"),
         "cls": None,
-        "rec": BASE + r"\PP-OCRv6_small_rec_onnx\inference.onnx",
-        "dict": BASE + r"\ppocr_keys_v6.txt",
+        "rec": str(pathlib.Path(BASE) / "PP-OCRv6_small_rec_onnx" / "inference.onnx"),
+        "dict": str(pathlib.Path(BASE) / "ppocr_keys_v6.txt"),
         "rec_height": 48,
         "dict_offset": 0,
         "dict_trim": 0,

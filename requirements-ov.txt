@@ -12,3 +12,12 @@
 # "openvino" 时启用（auto 只按 ocr_device 走 paddle 后端，不做隐式择优）。
 # 选了哪个后端，留意日志里的 `[ov] 后端: <name>`。
 openvino>=2026.0
+
+# 独立运行 scripts/ppocr_openvino.py 的全部前后处理依赖。
+# 不依赖 requirements.txt 的 Paddle/CUDA 栈；headless 版也适用于无桌面的 Linux。
+numpy>=1.24
+opencv-python-headless>=4.5
+pyclipper>=1.3
+
+# Official optional layout ONNX metadata.
+PyYAML>=6.0

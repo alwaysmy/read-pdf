@@ -1,0 +1,11 @@
+# Merge into engine_config.local.yaml; do not overwrite existing private settings.
+# Text + bundled PP-OCRv6 ONNX. PP-DocLayout is separate and not included here.
+defaults:
+  device: cpu
+  layout_device: cpu
+  ocr_device: cpu
+  ocr_backend: openvino
+engines:
+  hybrid:
+    recognizer:
+      backend: openvino

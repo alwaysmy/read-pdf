@@ -26,7 +26,7 @@ allowed-tools:
 
 # /read-pdf — Extract text from PDF files
 
-Extract text from PDFs. Python scripts handle extraction; agent handles quality judgment and engine routing.
+Extract text from PDFs. Scripts preserve provenance, coverage and observable quality signals; the agent judges semantic correctness and chooses evidence to verify.
 
 ## Usage examples
 
@@ -49,11 +49,11 @@ Extract text from PDFs. Python scripts handle extraction; agent handles quality 
 
 ### 文本 PDF
 
-**pdfmux + pdfplumber 双引擎**（默认同时输出）：
+**原生正文 + 独立结构诊断**：
 - **pdfmux**：从文本层重建结构，速度快（~0.85s/页），表格/多栏还原好
-- **pdfplumber**：提取原始文本和表格，作为参考核对
+- **PyMuPDF + pdfplumber**：规范正文与原始表格 cells；pdfmux 单独保存为诊断文件，不重复拼入正文
 
-PyMuPDF 提取几乎零成本（<0.01s/页），永远先跑一遍。agent 通读判断完整性。
+自动模式逐个检查请求页的文字/图像覆盖/空白信号，仅对需要 OCR 的页启动引擎。检查 coverage 和质量标记，再对关键内容回看原图；`ok` 不等于已经验证准确性。
 
 发现内容缺失/乱序后，先确认 VRAM 空闲 >3GB（不够就先关掉非必要的 GPU 进程）。然后：
 
@@ -179,7 +179,7 @@ PaddleOCR Hybrid 覆盖 95% 场景，能保留版面结构、表标题、多栏�
 
 **抽取缓存（默认开启）。** 每页 OCR 结果缓存到 `{name}_output/.cache/`（key 含 PDF 名/页码/引擎/源/DPI，自动失效），二次处理直接读缓存免 OCR（实测 total_time 0.0s）。`--no-cache` 禁用，`--refresh-cache` 强制重跑。
 
-**服务模式（本体 HTTP + MCP）。** 可独立运行：`python scripts/server.py`（host/port 在 `engine_config.yaml` 的 `server` 段配置，默认 8123；首次启动自动生成 Bearer key 存 `~/.readpdf/key`）→ MCP 客户端经 `mcp_server.py` 接入，工具 `extract_pdf`/`layout_pdf`/`list_engines`。详见 `docs/server-design_20260808.md`。配置（引擎/双源/路由/端口）集中在 `engine_config.yaml`，本机覆盖用 `engine_config.local.yaml`。
+**服务模式（本体 HTTP + MCP）。** 可独立运行：`python scripts/server.py`（host/port 在 `engine_config.yaml` 的 `server` 段配置，默认 8123；首次启动自动生成 Bearer key 存 `~/.readpdf/key`）→ MCP 客户端经 `mcp_server.py` 接入，工具 `extract_pdf`/`layout_pdf`/`list_engines`，以及读取已有 `.document.json` 的 `open_document`/`read_document`/`search_document`。先从 extract 返回值取得 `package_path`，再有界读取/搜索；始终检查 coverage、quality_flags 和 page_statuses。新工具不会自动补算缺页，具体契约见 `docs/PDF_QUALITY_IMPLEMENTATION.md`。详见 `docs/server-design_20260808.md`。配置（引擎/双源/路由/端口）集中在 `engine_config.yaml`，本机覆盖用 `engine_config.local.yaml`。
 
 ### 默认流程
 

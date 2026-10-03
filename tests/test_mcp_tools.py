@@ -22,8 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 def make_text_pdf() -> str:
     """生成一个最小文本层 PDF，使 extract 路径可脱离外部素材自测.
 
-    注意页均字符数必须 >100 —— `extract_pdf.py` 用 `avg_chars < 100` 判定是否为
-    扫描件；字符太少会被正当地当成扫描页而转走 OCR 引擎（进而要求启动 llama-server）。
+    生成足够文字用于有界读取、分页与搜索。当前逐页路由也支持稀疏原生文本。
     """
     import fitz
 
@@ -68,6 +67,24 @@ def main():
           f"size={r.get('size_bytes')} tables={r.get('tables')}")
     assert r.get("status") == "ok", f"extract 失败: {r}"
     assert r.get("size_bytes", 0) > 0, f"size_bytes 缺失: {r}"
+
+    # 2b. New package reader tools use the same real HTTP backend.
+    package_path = r.get("package_path")
+    assert package_path, f"Document Package path missing: {r}"
+    opened = mcp_server.open_document(package_path)
+    assert opened.get("revision_id") == r["revision_id"], opened
+    read = mcp_server.read_document(package_path, pages="1", max_chars=40)
+    assert read.get("text") and len(read["text"]) <= 40, read
+    assert read.get("citations") and read["coverage"] == r["coverage"], read
+    needle = read["text"][:15]
+    found = mcp_server.search_document(package_path, needle, max_hits=1)
+    assert found.get("returned_hits") == 1, found
+    assert found["hits"][0]["citation"]["physical_page"] == 1, found
+    if read.get("next_cursor"):
+        next_page = mcp_server.read_document(package_path, pages="1", max_chars=40,
+                                             cursor=read["next_cursor"])
+        assert next_page.get("offset") == 40, next_page
+    print("2b. open/read/search package + bounded continuation OK")
 
     # 3. layout_pdf（需真实扫描件，缺失则跳过）
     scan_pdf = os.environ.get("READPDF_TEST_SCAN_PDF", "")

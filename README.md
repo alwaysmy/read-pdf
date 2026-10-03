@@ -8,7 +8,7 @@ PDF 提取 skill：文本层提取（pdfmux + pdfplumber）→ OCR 引擎（Padd
 - **图像 PDF（默认）**：PaddleOCR Hybrid（版面检测 + 识别后端；**后端由配置决定**，见下表下方说明）
 - **备选 OCR**：GLM-OCR（公式/数值表格保真）、DeepSeek-OCR（纯文本扫描件提速 ~45%）
 - **版面分析**：`--layout` 定位表格/示意图 → 裁剪存图 + 布局 JSON（PP-DocLayoutV3，GPU 0.06s/页）
-- **抽取缓存**：默认开启，二次处理免 OCR（0.0s）
+- **抽取缓存**：默认开启，二次处理复用 OCR（仍有文件/结果读取开销）
 - **云源**：PaddleOCR AI Studio 云 API（同款模型，无 GPU 兜底）
 
 ## 快速开始
@@ -24,6 +24,16 @@ python scripts/extract_pdf.py book.pdf
 python scripts/extract_pdf.py scan.pdf --pages 1-10
 ```
 
+## 无 GPU 的完整 CPU 路径
+
+仓库自带 PP-OCRv6 ONNX 权重。安装 `requirements-test.txt` 和 `requirements-ov.txt`，配置 `defaults.ocr_backend: openvino`，即可用 `--ov` 实际识别扫描件；无需 Paddle/CUDA。默认输出 Markdown、源页 PNG 和嵌入图片链接，`--no-images` 可关闭图片。
+
+真实 CLI/HTTP/MCP 扫描识别、混合 PDF、中英文/表格/公式/图样例和 TI 数据手册验证，及遥测关闭步骤、明确的结构识别限制，见 [CPU 链路运行记录](docs/CPU_PIPELINE_VALIDATION.md)。
+
+### 扫描版面与有线表格
+
+可选官方 PP-DocLayoutV3 ONNX（约131 MB）已在 CPU 实测接通：`--hybrid` 可以按区域阅读顺序输出表格/图片，并恢复清晰网格表的单元格及可见合并关系。基于 Min/Typ/Max 表头推断的列始终告警；普通 OCR 不伪造 LaTeX。配置、实际测试与限制见 [扫描版面质量记录](docs/LAYOUT_QUALITY.md)。
+
 ## 服务模式（本体 + MCP，阶段 1）
 
 read-pdf 可独立运行为 HTTP 服务，供 MCP 客户端 / 插件调用（详见 `docs/server-design_20260808.md`）：
@@ -36,7 +46,13 @@ python scripts/server.py
 python scripts/mcp_server.py
 ```
 
-MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`。
+MCP 工具：`extract_pdf` / `layout_pdf` / `list_engines`，新增 `open_document` / `read_document` / `search_document`（读取已有 Document Package，不自动 OCR）。
+
+### 可靠性与按需读取
+
+默认提取现在逐页处理混合 PDF，缓存按源文件内容而非文件名识别；保留表格重复行/空值、OCR 截断信息和页级失败。JSON 返回 `package_path`、版本、覆盖与质量标记。可以用新工具按页、按字符预算读取，或搜索带页/块引用的片段。
+
+纯文本页的规范正文来自 PyMuPDF + pdfplumber；pdfmux 全文另存为诊断视图。旧 CLI 参数、输出便利路径和 MCP 工具保留。详见 [本阶段实现、用法与验证边界](docs/PDF_QUALITY_IMPLEMENTATION.md)。
 
 # 图像 PDF（默认 hybrid）
 python scripts/extract_pdf.py scan.pdf

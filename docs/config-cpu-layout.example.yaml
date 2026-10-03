@@ -1,0 +1,13 @@
+# Merge into existing engine_config.local.yaml. Keep private settings unchanged.
+# Download official PP-DocLayoutV3 ONNX + inference.yml separately, see LAYOUT_QUALITY.md.
+defaults:
+  device: cpu
+  ocr_device: cpu
+  ocr_backend: openvino
+  layout_device: cpu
+  layout_backend: openvino
+  layout_ov_dir: /absolute/path/to/PP-DocLayoutV3_onnx
+engines:
+  hybrid:
+    recognizer:
+      backend: openvino
