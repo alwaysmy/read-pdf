@@ -7,3 +7,6 @@ Pillow>=10.0
 requests>=2.31
 Flask>=3.0
 mcp>=1.0
+
+# Generates original PDFs for the opt-in real pipeline smoke runner.
+reportlab>=4.0

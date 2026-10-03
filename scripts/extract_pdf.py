@@ -420,6 +420,7 @@ def _ov_via_openvino(ov, img_path):
     lines, stats = _ov_lines_openvino(ov, img_path)
     if lines is None:
         return "", stats
+    stats["representation"] = "plain_text_lines"
     return "\n".join(l["text"] for l in lines), stats
 
 
@@ -469,6 +470,7 @@ def _ov_via_paddle(ov, img_path):
     lines, stats = _ov_lines_paddle(ov, img_path)
     if lines is None:
         return "", stats
+    stats["representation"] = "plain_text_lines"
     return "\n".join(l["text"] for l in lines), stats
 
 
@@ -913,10 +915,47 @@ def _atomic_json(path, value):
             os.unlink(temp_name)
 
 
+def export_page_images(page, output_dir, revision, dpi=150):
+    """Preserve page appearance + embedded image regions using PyMuPDF only.
+
+    Page renders retain vector drawings as well as raster content. Crops are source
+    image rectangles, not a claim of semantic figure/table detection.
+    """
+    folder = pathlib.Path(output_dir) / "imgs" / revision[:16]
+    folder.mkdir(parents=True, exist_ok=True)
+    page_number = page.number + 1
+    assets = []
+    def render(rect, name, kind):
+        path = folder / name
+        if not path.is_file() or not path.stat().st_size:
+            with tempfile.NamedTemporaryFile(dir=folder, suffix=".png", delete=False) as tmp:
+                temporary = pathlib.Path(tmp.name)
+            try:
+                page.get_pixmap(clip=rect, dpi=dpi, alpha=False).save(temporary)
+                os.replace(temporary, path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        assets.append({"type": kind, "page": page_number, "path": str(path),
+                       "relative_path": path.relative_to(output_dir).as_posix(),
+                       "bbox": list(rect), "coordinate_space": "rotated_pdf_points", "dpi": dpi})
+    render(page.rect, f"page-{page_number:04d}-{dpi}dpi.png", "source_page")
+    for index, info in enumerate(page.get_image_info(), 1):
+        rect = (fitz.Rect(info["bbox"]) * page.rotation_matrix) & page.rect
+        if rect.is_empty or abs(rect) / max(abs(page.rect), 1) >= 0.9:
+            continue  # A scan is already retained as the source-page render.
+        render(rect, f"page-{page_number:04d}-image-{index:03d}-{dpi}dpi.png", "embedded_image")
+    return assets
+
+
 def _page_quality(text, stats, detection, engine):
     flags = list(stats.get("quality_flags") or [])
     if stats.get("truncated") or stats.get("finish_reason") == "length":
         flags.append("completion_truncated")
+    if stats.get("representation") == "plain_text_lines":
+        flags.append("structure_unavailable")
+    if (stats.get("layout") or {}).get("status") == "unavailable":
+        flags.append("layout_unavailable")
     if stats.get("error"):
         flags.append("extraction_error")
     if not text.strip() and not (engine == "text" and detection["blank"]):
@@ -1018,7 +1057,7 @@ def cache_put(cache_dir, key, text, stats=None):
         return False
 
 
-_PIPELINE_VERSION = 2  # content-addressed caches + per-page routing + lossless tables
+_PIPELINE_VERSION = 3  # image output + truthful layout degradation + CPU portability
 
 
 def _engine_model_tag(engine):
@@ -1106,6 +1145,7 @@ def parse_args():
     p.add_argument("--audit", action="store_true", help="Qwen 35B knowledge audit (use on 2-3 key pages)")
     p.add_argument("--html", action="store_true", help="Same as --audit (more intuitive name)")
     p.add_argument("--no-table", action="store_true", help="Skip pdfplumber table extraction")
+    p.add_argument("--no-images", action="store_true", help="Skip source-page PNGs and embedded-image Markdown links")
     p.add_argument("--pdfmux", action="store_true", help="Use pdfmux for text PDF structure (default: auto)")
     p.add_argument("--no-pdfmux", action="store_true", help="Disable pdfmux for text PDF")
     p.add_argument("--text-only", action="store_true", help="Text-only mode: force text engine, print bare page text to stdout (form-feed delimited, pdftotext-compatible)")
@@ -1148,8 +1188,23 @@ def main():
         except ImportError:
             pass
 
-    doc = fitz.open(str(pdf_path))
+    if not 50 <= args.dpi <= 600:
+        print("ERROR: dpi must be between 50 and 600", flush=True)
+        sys.exit(1)
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception as error:
+        print(f"ERROR: cannot open PDF: {error}", flush=True)
+        sys.exit(1)
+    if doc.needs_pass:
+        doc.close()
+        print("ERROR: PDF is password-protected; provide an unlocked copy", flush=True)
+        sys.exit(1)
     total_pages = len(doc)
+    if not total_pages:
+        doc.close()
+        print("ERROR: PDF contains no pages", flush=True)
+        sys.exit(1)
 
     if args.pages:
         # Support comma-separated ranges: "5-10,20-25" or "3,7,15-18"
@@ -1374,6 +1429,14 @@ def main():
             actual = engine if explicit_ocr or page_detection[page_num]["needs_ocr"] else "text"
             t0 = time.monotonic()
             stats, tables, text = {}, [], ""
+            images_by_page, image_errors = {}, {}
+            for pn in batch:
+                try:
+                    images_by_page[pn] = ([] if args.no_images else
+                                         export_page_images(doc[pn], out_folder, revision, args.dpi))
+                except Exception as error:
+                    images_by_page[pn] = []
+                    image_errors[pn] = str(error)
             if actual == "text":
                 text = extract_page_text(page)
                 if not args.no_table:
@@ -1395,7 +1458,7 @@ def main():
                     text, stats = cached
                     stats = dict(stats, cache="hit")
                 else:
-                    tmp_paths = []
+                    tmp_paths, cleanup_paths = [], []
                     try:
                         if not started:
                             if effective_source != "cloud":
@@ -1405,9 +1468,15 @@ def main():
                                     ensure_server({"llama": "hybrid", "audit": "qwen"}.get(actual, actual))
                             started = True
                         for pn in batch:
-                            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                                tmp_paths.append(tmp.name)
-                            doc[pn].get_pixmap(dpi=args.dpi).save(tmp_paths[-1])
+                            source_image = next((asset["path"] for asset in images_by_page[pn]
+                                                 if asset["type"] == "source_page"), None)
+                            if source_image:
+                                tmp_paths.append(source_image)
+                            else:
+                                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                                    tmp_paths.append(tmp.name)
+                                    cleanup_paths.append(tmp.name)
+                                doc[pn].get_pixmap(dpi=args.dpi).save(tmp_paths[-1])
                         for attempt in range(3):
                             if len(batch) > 1:
                                 text, stats = extract_qwen_multi(tmp_paths)
@@ -1426,7 +1495,7 @@ def main():
                     except Exception as error:
                         text, stats = "", {"error": f"{type(error).__name__}: {error}"}
                     finally:
-                        for temp_path in tmp_paths:
+                        for temp_path in cleanup_paths:
                             try:
                                 os.unlink(temp_path)
                             except OSError:
@@ -1436,6 +1505,19 @@ def main():
             output.write(f"\n\n<!-- {label} -->\n\n{text}")
             if tables:
                 output.write("\n\n[TABLES]\n\n" + "\n".join(format_table_md(t) for t in tables))
+            for pn in batch:
+                for asset in images_by_page[pn]:
+                    relative = asset["relative_path"]
+                    if suffix == "html":
+                        from html import escape
+                        if asset["type"] == "source_page":
+                            output.write(f'\n<p><a href="{escape(relative)}">Source page {pn+1}</a></p>')
+                        else:
+                            output.write(f'\n<img src="{escape(relative)}" alt="Embedded image, page {pn+1}">')
+                    elif asset["type"] == "source_page":
+                        output.write(f"\n\n[Source page {pn+1}](<{relative}>)")
+                    else:
+                        output.write(f"\n\n![Embedded image, page {pn+1}](<{relative}>)")
             output.flush()
             if len(batch) > 1:
                 unaligned_candidates.append({"source_pages": [pn + 1 for pn in batch],
@@ -1444,12 +1526,16 @@ def main():
                                              "quality_flags": ["audit_batch_unaligned"]})
             for pn in batch:
                 page_stats = dict(stats)
+                page_stats["quality_flags"] = list(stats.get("quality_flags") or [])
+                if pn in image_errors:
+                    page_stats["quality_flags"].append("image_export_failed")
+                    page_stats["image_error"] = image_errors[pn]
                 if len(batch) > 1:
-                    page_stats["quality_flags"] = list(stats.get("quality_flags") or []) + ["audit_batch_unaligned"]
+                    page_stats["quality_flags"].append("audit_batch_unaligned")
                 flags, status = _page_quality(text, page_stats, page_detection[pn], actual)
                 record = {"page": pn + 1, "engine": actual, "source": effective_source if actual != "text" else None,
                           "time": round(elapsed / len(batch), 4), "chars": len(text) // len(batch),
-                          "tables": len(tables), "table_data": tables,
+                          "tables": len(tables), "table_data": tables, "images": images_by_page[pn],
                           # Multi-page audit is one candidate; do not duplicate it as each page's truth.
                           "text_raw": text if len(batch) == 1 else "",
                           **page_stats, "quality_flags": flags, "status": status}
@@ -1489,6 +1575,7 @@ def main():
                 except OSError:
                     pass
     signatures["text"] = f"native-v{_PIPELINE_VERSION}-tables-{not args.no_table}"
+    signatures["images"] = "disabled" if args.no_images else f"source-and-crops-{args.dpi}dpi"
     pipeline = hashlib.sha256(json.dumps(signatures, sort_keys=True).encode()).hexdigest()[:16]
     package = _document_package(pdf_path, revision, doc, page_nums, pages_data, pipeline,
                                 time.monotonic() - run_start)
@@ -1506,7 +1593,9 @@ def main():
             alias_temp.unlink()
     package["issues"] = issues
     package["unaligned_candidates"] = unaligned_candidates
-    package["artifacts"] = [{"type": "markdown" if suffix == "md" else "html", "path": str(snapshot_path)}, *diagnostics]
+    image_artifacts = [asset for page in pages_data for asset in page.get("images", [])]
+    package["artifacts"] = [{"type": "markdown" if suffix == "md" else "html", "path": str(snapshot_path)},
+                             *image_artifacts, *diagnostics]
     package["compatibility_output"] = {"path": str(out_path), "mutable": True}
     package_path = out_path.with_suffix(f".{revision[:16]}.{pipeline}.document.json")
     _atomic_json(package_path, package)
@@ -1517,6 +1606,7 @@ def main():
               "wall_time_s": package["run"]["wall_time_s"],
               "pages": [{k: v for k, v in p.items() if k not in ("text_raw", "table_data")} for p in pages_data],
               "package_path": str(package_path), "doc_id": revision, "revision_id": revision,
+              "images": image_artifacts,
               "page_statuses": [{"physical_page": p["page"], "status": p["status"],
                                   "quality_flags": p["quality_flags"]} for p in pages_data],
               "coverage": package["coverage"], "quality_flags": package["quality_flags"], "issues": issues}

@@ -187,7 +187,7 @@ def extract_pdf(pdf, pages=None, engine=None, source=None, dpi=None, output_dir=
     }
     # Completeness and warnings must never be hidden by the compact response.
     for field in ("package_path", "doc_id", "revision_id", "coverage", "issues",
-                  "quality_flags", "page_statuses", "pages", "page_results"):
+                  "quality_flags", "page_statuses", "pages", "page_results", "images"):
         if field in result:
             summary[field] = result[field]
     return summary

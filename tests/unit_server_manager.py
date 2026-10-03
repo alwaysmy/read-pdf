@@ -15,7 +15,11 @@ def main():
     import server_manager
     from engines import load_config
 
-    cfg = load_config()
+    # Test fallback policy independently of a user's local CPU deployment settings.
+    import copy
+    cfg = copy.deepcopy(load_config())
+    cfg["defaults"]["device"] = "gpu"
+    cfg["defaults"]["gpu_fallback"] = True
 
     # 1. GPU 检测（本机有 GPU 则 True）
     gpu = server_manager._detect_gpu()

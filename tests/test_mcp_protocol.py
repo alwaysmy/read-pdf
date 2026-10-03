@@ -27,6 +27,11 @@ def read_msg(proc):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--extract-scan", help="Optional real scan PDF for an actual OCR tools/call")
+    parser.add_argument("--output-dir", help="Output folder for optional real OCR")
+    args = parser.parse_args()
     proc = subprocess.Popen([sys.executable, str(MCP)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
@@ -54,7 +59,22 @@ def main():
     print("3. tools/call list_engines:", text[:120])
     assert "hybrid" in text, f"list_engines 结果异常: {text[:200]}"
 
+    if args.extract_scan:
+        arguments = {"pdf": args.extract_scan, "engine": "ov", "output_dir": args.output_dir}
+        send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                    "params": {"name": "extract_pdf", "arguments": arguments}})
+        r = read_msg(proc)
+        payload = r.get("result", {}) if r else {}
+        data = payload.get("structuredContent")
+        if data is None:
+            content = payload.get("content", [])
+            data = json.loads("\n".join(item.get("text", "") for item in content if item.get("type") == "text"))
+        assert data.get("status") in ("ok", "warn"), data
+        assert data.get("package_path") and data.get("images"), data
+        assert sum(page.get("chars", 0) for page in data.get("pages", [])) > 0, data
+        print("4. real scan extraction through MCP stdio:", json.dumps(data, ensure_ascii=False))
     proc.terminate()
+    proc.wait(timeout=10)
     print("\nMCP stdio 协议自测全部通过 ✅")
 
 
