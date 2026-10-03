@@ -31,6 +31,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--extract-scan", help="Optional real scan PDF for an actual OCR tools/call")
     parser.add_argument("--output-dir", help="Output folder for optional real OCR")
+    parser.add_argument("--engine", choices=("ov", "hybrid"), default="ov")
     args = parser.parse_args()
     proc = subprocess.Popen([sys.executable, str(MCP)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -60,7 +61,7 @@ def main():
     assert "hybrid" in text, f"list_engines 结果异常: {text[:200]}"
 
     if args.extract_scan:
-        arguments = {"pdf": args.extract_scan, "engine": "ov", "output_dir": args.output_dir}
+        arguments = {"pdf": args.extract_scan, "engine": args.engine, "output_dir": args.output_dir}
         send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                     "params": {"name": "extract_pdf", "arguments": arguments}})
         r = read_msg(proc)

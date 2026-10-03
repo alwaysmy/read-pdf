@@ -18,3 +18,6 @@ openvino>=2026.0
 numpy>=1.24
 opencv-python-headless>=4.5
 pyclipper>=1.3
+
+# Official optional layout ONNX metadata.
+PyYAML>=6.0

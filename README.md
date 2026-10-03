@@ -30,6 +30,10 @@ python scripts/extract_pdf.py scan.pdf --pages 1-10
 
 真实 CLI/HTTP/MCP 扫描识别、混合 PDF、中英文/表格/公式/图样例和 TI 数据手册验证，及遥测关闭步骤、明确的结构识别限制，见 [CPU 链路运行记录](docs/CPU_PIPELINE_VALIDATION.md)。
 
+### 扫描版面与有线表格
+
+可选官方 PP-DocLayoutV3 ONNX（约131 MB）已在 CPU 实测接通：`--hybrid` 可以按区域阅读顺序输出表格/图片，并恢复清晰网格表的单元格及可见合并关系。基于 Min/Typ/Max 表头推断的列始终告警；普通 OCR 不伪造 LaTeX。配置、实际测试与限制见 [扫描版面质量记录](docs/LAYOUT_QUALITY.md)。
+
 ## 服务模式（本体 + MCP，阶段 1）
 
 read-pdf 可独立运行为 HTTP 服务，供 MCP 客户端 / 插件调用（详见 `docs/server-design_20260808.md`）：

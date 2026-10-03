@@ -19,6 +19,8 @@ SUITES = [
     ('test_image_outputs.py', 'real image export / CLI failure modes', False),
     ('test_completion_metadata.py', 'completion metadata', False),
     ('test_ppocr_runtime.py', 'optional real bundled CPU OCR runtime', False),
+    ('test_layout_tables.py', 'visible table geometry / honest assembly', False),
+    ('test_doclayout_runtime.py', 'optional real official layout model', False),
     ('test_document_reader.py', 'document readers / Flask / MCP adapters', False),
     ('test_mcp_tools.py', 'live HTTP/MCP tools', True),
     ('test_mcp_protocol.py', 'live MCP stdio protocol', True),

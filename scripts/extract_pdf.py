@@ -610,7 +610,7 @@ def _ensure_hybrid_server():
 # ---------------------------------------------------------------------------
 _ORPHAN_OVERLAP = 0.7       # 行 bbox 落在块内的面积占比阈值
 _FULL_WIDTH_RATIO = 0.7     # 宽 ≥ 页宽此比例 → 通栏块（分栏边界）
-_HEADING_LEVEL = {"doc_title": "#", "title": "##", "header": "###"}
+_HEADING_LEVEL = {"doc_title": "#", "title": "##", "paragraph_title": "##", "header": "###"}
 _FIGURE_LABELS = {"figure", "image", "chart", "seal", "stamp"}
 
 
@@ -679,6 +679,8 @@ def _reading_order(blocks, page_w):
     """
     if not blocks:
         return []
+    if all(block.get("reading_order") is not None for block in blocks):
+        return sorted(blocks, key=lambda block: block["reading_order"])
     full = [b for b in blocks if (b["bbox"][2] - b["bbox"][0]) >= _FULL_WIDTH_RATIO * page_w]
     full_ids = {id(b) for b in full}
     others = [b for b in blocks if id(b) not in full_ids]
@@ -734,18 +736,67 @@ def _render_markdown(ordered, by_idx, orphans):
 
 
 def _merge_lines_with_layout(lines, blocks, img_path):
-    """整页 OCR 的行 + 版面块 → 结构化 markdown."""
-    for i, b in enumerate(blocks):
-        b["_idx"] = i
-    try:
-        from PIL import Image
-        with Image.open(img_path) as im:
-            page_w = im.size[0]
-    except Exception:
-        page_w = max((b["bbox"][2] for b in blocks), default=1)
+    """Assemble actual detected regions; reconstruct only visibly ruled cells."""
+    import cv2
+    from ruled_tables import reconstruct_table, render_table, refine_min_typ_max
+    if not any(str(line.get("text", "")).strip() for line in lines):
+        return "", {"error": "OCR produced no recognized text; layout alone cannot establish text coverage",
+                    "quality_flags": ["empty_extraction"]}
+    image = cv2.imread(str(img_path))
+    inline_regions = [dict(block) for block in blocks if block.get("label") == "inline_formula"]
+    # Inline annotations are children of text/table regions, not standalone pages
+    # of tiny formula crops. OCR lines remain in the containing block or orphans.
+    blocks = [block for block in blocks if block.get("label") != "inline_formula"]
+    for i, block in enumerate(blocks):
+        block["_idx"] = i
     by_idx, orphans = _assign_lines_to_blocks(lines, blocks)
-    text = _render_markdown(_reading_order(blocks, page_w), by_idx, orphans)
-    return text, {"layout": {"status": "ok", "blocks": len(blocks), "orphans": len(orphans)}}
+    page_w = image.shape[1] if image is not None else max((b["bbox"][2] for b in blocks), default=1)
+    ordered = _reading_order(blocks, page_w)
+    parts, records, tables, flags = [], [], [], []
+    if inline_regions:
+        flags.append("formula_structure_unverified")
+    for block in ordered:
+        label = block.get("label", "text")
+        selected = by_idx[block["_idx"]]
+        raw = "\n".join(line["text"] for line in sorted(selected, key=_line_sort_key))
+        record = {"type": label, "bbox": block["bbox"], "score": block["score"],
+                  "coordinate_space": "rendered_pixels", "reading_order": len(records),
+                  "text_raw": raw, "quality_flags": [], "region_id": block["_idx"]}
+        if label == "table":
+            table = reconstruct_table(image, block["bbox"], selected)
+            if table:
+                if "table_columns_ambiguous" in table["quality_flags"]:
+                    table = refine_min_typ_max(table, selected)
+                tables.append(table)
+                raw = render_table(table)
+                record.update(text_raw=raw, table=table)
+                record["quality_flags"].extend(table["quality_flags"])
+            else:
+                record["quality_flags"].append("table_structure_unavailable")
+                raw = "<!-- Table structure unavailable; original OCR lines follow -->\n" + raw
+        elif label in ("formula", "display_formula", "inline_formula"):
+            # Plain OCR is not a formula parser: never fabricate LaTeX delimiters.
+            record["quality_flags"].append("formula_structure_unverified")
+            raw = "<!-- Formula structure unverified; use the region image -->\n" + raw
+        elif label in _HEADING_LEVEL and raw:
+            raw = _HEADING_LEVEL[label] + " " + raw
+        flags.extend(record["quality_flags"])
+        if raw:
+            parts.append(raw)
+        if label in _CROP_LABELS:
+            parts.append(f"<!-- readpdf-region:{block['_idx']} -->")
+        records.append(record)
+    if orphans:
+        raw = "\n".join(line["text"] for line in sorted(orphans, key=_line_sort_key))
+        parts.append("<!-- Unassigned OCR lines retained -->\n" + raw)
+        records.append({"type": "unassigned_text", "bbox": None, "coordinate_space": "rendered_pixels",
+                        "reading_order": len(records), "text_raw": raw,
+                        "quality_flags": ["layout_text_unassigned"]})
+        flags.append("layout_text_unassigned")
+    return "\n\n".join(parts), {"layout": {"status": "ok", "blocks": len(blocks), "orphans": len(orphans)},
+                                 "layout_blocks": records, "structured_tables": tables,
+                                 "inline_formula_regions": inline_regions,
+                                 "quality_flags": sorted(set(flags))}
 
 
 def _hybrid_ppocrv6(img_path, rec):
@@ -791,19 +842,31 @@ def extract_pdfmux(pdf_path, pages=None):
 # Layout analysis (PP-DocLayoutV3: DETR + PPHGNetV2-L，实例分割 + 阅读顺序)
 # ---------------------------------------------------------------------------
 _LAYOUT_MODEL = None
+_LAYOUT_KEY = None
 
 
 def _get_layout_model(device="cpu"):
     """Lazy-load PaddleX PP-DocLayoutV3（DETR 架构 + PPHGNetV2-L 骨干，实例分割 + 阅读顺序）。"""
-    global _LAYOUT_MODEL
-    if _LAYOUT_MODEL is None:
-        import paddlex as pdx
-        _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3', device=device)
+    global _LAYOUT_MODEL, _LAYOUT_KEY
+    defaults = _ov_config()
+    backend = defaults.get("layout_backend", "paddle")
+    directory = defaults.get("layout_ov_dir", "")
+    key = (backend, directory, device)
+    if _LAYOUT_MODEL is None or _LAYOUT_KEY != key:
+        if backend == "openvino":
+            from doclayout_openvino import create_model
+            _LAYOUT_MODEL = create_model(directory, device=device)
+        elif backend == "paddle":
+            import paddlex as pdx
+            _LAYOUT_MODEL = pdx.create_model('PP-DocLayoutV3', device=device)
+        else:
+            raise ValueError(f"Unknown layout_backend: {backend}")
+        _LAYOUT_KEY = key
     return _LAYOUT_MODEL
 
 
 # table/figure 等可裁剪元素；text/header/footer 等文本元素不裁剪
-_CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption"}
+_CROP_LABELS = {"table", "figure", "formula", "image", "chart", "seal", "stamp", "figure_caption", "table_caption", "display_formula"}
 
 
 def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
@@ -844,6 +907,7 @@ def extract_layout(img_path, page_num=1, min_score=0.3, device="cpu"):
                 "score": round(score, 3),
                 "bbox": bbox,
                 "crop": label in _CROP_LABELS,
+                "reading_order": box.get("reading_order"),
             })
         return blocks, {}
     except Exception as e:
@@ -948,10 +1012,37 @@ def export_page_images(page, output_dir, revision, dpi=150):
     return assets
 
 
+def export_layout_regions(source_image, output_dir, revision, page_number, dpi, blocks):
+    from PIL import Image
+    folder = pathlib.Path(output_dir) / "imgs" / revision[:16]
+    folder.mkdir(parents=True, exist_ok=True)
+    assets = []
+    with Image.open(source_image) as image:
+        for block in blocks:
+            if block["type"] not in _CROP_LABELS or not block.get("bbox"):
+                continue
+            x0, y0, x1, y1 = block["bbox"]
+            rect = [max(0, int(x0) - 3), max(0, int(y0) - 3), min(image.width, int(x1) + 3), min(image.height, int(y1) + 3)]
+            if rect[0] >= rect[2] or rect[1] >= rect[3]:
+                continue
+            filename = f"page-{page_number:04d}-region-{block['region_id']:03d}-{block['type']}-{dpi}dpi.png"
+            path = folder / filename
+            image.crop(rect).save(path)
+            relative = path.relative_to(output_dir).as_posix()
+            block["crop_ref"] = relative
+            assets.append({"type": "layout_region", "label": block["type"], "page": page_number,
+                           "path": str(path), "relative_path": relative, "bbox": rect,
+                           "coordinate_space": "rendered_pixels", "dpi": dpi,
+                           "region_id": block["region_id"]})
+    return assets
+
+
 def _page_quality(text, stats, detection, engine):
     flags = list(stats.get("quality_flags") or [])
     if stats.get("truncated") or stats.get("finish_reason") == "length":
         flags.append("completion_truncated")
+    if "°℃" in text or "°℉" in text:
+        flags.append("suspicious_unit_symbol")
     if stats.get("representation") == "plain_text_lines":
         flags.append("structure_unavailable")
     if (stats.get("layout") or {}).get("status") == "unavailable":
@@ -1001,6 +1092,11 @@ def _document_package(pdf_path, revision, doc, requested, pages, pipeline, wall_
                                      "text_raw": format_table_md(cells), "cells": cells, "bbox": None,
                                      "extraction_method": "pdfplumber", "quality_flags": item["quality_flags"],
                                      "validation_state": "unverified"})
+        if item.get("layout_blocks"):
+            record["blocks"] = [{"block_id": f"{revision[:16]}:{pipeline}:p{item['page']}:r{index}",
+                                 "extraction_method": "layout_and_ocr", "validation_state": "unverified",
+                                 **block} for index, block in enumerate(item["layout_blocks"])]
+            record.pop("layout_blocks", None)
         packaged.append(record)
     return {"schema_version": "1.0", "doc_id": revision, "revision_id": revision,
             "source": {"filename": pdf_path.name, "sha256": revision},
@@ -1057,7 +1153,7 @@ def cache_put(cache_dir, key, text, stats=None):
         return False
 
 
-_PIPELINE_VERSION = 3  # image output + truthful layout degradation + CPU portability
+_PIPELINE_VERSION = 5  # real CPU layout, ruled cells, nested-formula-safe assembly
 
 
 def _engine_model_tag(engine):
@@ -1114,6 +1210,14 @@ def _pipeline_signature(engine, dpi, source):
     try:
         import engines as eng
         parts["defaults"] = public_config(eng.load_config().get("defaults") or {})
+        if parts["defaults"].get("layout_backend") == "openvino":
+            directory = pathlib.Path(parts["defaults"].get("layout_ov_dir") or ".")
+            parts["layout_files"] = {}
+            for filename in ("inference.onnx", "inference.yml"):
+                path = directory / filename
+                if path.is_file():
+                    stat = path.stat()
+                    parts["layout_files"][filename] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
         name = "paddle_vl" if engine == "hybrid" and source == "cloud" else {"llama": "hybrid", "audit": "qwen"}.get(engine, engine)
         config, actual_source = eng.get_engine(name, source)
         parts["config"] = public_config({k: v for k, v in config.items() if k != "sources"})
@@ -1500,13 +1604,35 @@ def main():
                                 os.unlink(temp_path)
                             except OSError:
                                 pass
+            if stats.get("layout_blocks") and len(batch) == 1:
+                import copy
+                stats = copy.deepcopy(stats)
+                try:
+                    source_image = next((asset["path"] for asset in images_by_page[page_num]
+                                         if asset["type"] == "source_page"), None)
+                    regions = (export_layout_regions(source_image, out_folder, revision, page_num + 1,
+                                                     args.dpi, stats["layout_blocks"])
+                               if source_image and not args.no_images else [])
+                    images_by_page[page_num].extend(regions)
+                except Exception as error:
+                    regions = []
+                    image_errors[page_num] = str(error)
+                for block in stats["layout_blocks"]:
+                    region_id = block.get("region_id")
+                    asset = next((asset for asset in regions if asset["region_id"] == region_id), None)
+                    link = f"![{block['type']}, page {page_num+1}](<{asset['relative_path']}>)" if asset else ""
+                    text = text.replace(f"<!-- readpdf-region:{region_id} -->", link)
+                tables = [table["matrix"] for table in stats.get("structured_tables", [])]
+                total_tables += len(tables)
             elapsed = time.monotonic() - t0
             label = f"PAGES {batch[0]+1}-{batch[-1]+1}" if len(batch) > 1 else f"PAGE {page_num+1}"
             output.write(f"\n\n<!-- {label} -->\n\n{text}")
-            if tables:
+            if tables and actual == "text":
                 output.write("\n\n[TABLES]\n\n" + "\n".join(format_table_md(t) for t in tables))
             for pn in batch:
                 for asset in images_by_page[pn]:
+                    if asset["type"] == "layout_region":
+                        continue  # Already placed at its detected reading-order position.
                     relative = asset["relative_path"]
                     if suffix == "html":
                         from html import escape
@@ -1604,7 +1730,7 @@ def main():
               "engine": engine, "detection": detection_info, "total_tables": total_tables,
               "total_time": round(sum(p["time"] for p in pages_data), 4),
               "wall_time_s": package["run"]["wall_time_s"],
-              "pages": [{k: v for k, v in p.items() if k not in ("text_raw", "table_data")} for p in pages_data],
+              "pages": [{k: v for k, v in p.items() if k not in ("text_raw", "table_data", "layout_blocks", "structured_tables", "inline_formula_regions")} for p in pages_data],
               "package_path": str(package_path), "doc_id": revision, "revision_id": revision,
               "images": image_artifacts,
               "page_statuses": [{"physical_page": p["page"], "status": p["status"],

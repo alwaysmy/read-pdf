@@ -91,8 +91,12 @@ def main():
     result,(md,package,entry)=cli('mixed_cli',fixtures/'mixed.pdf')
     assert [p['engine'] for p in result['pages'][:3]]==['text']*3
     assert result['pages'][3]['chars']>500
-    assert 'layout_unavailable' in result['quality_flags'],result
-    assert result['status']=='warn'
+    if result['pages'][3].get('layout',{}).get('status')=='unavailable':
+        assert 'layout_unavailable' in result['quality_flags'],result
+        assert result['status']=='warn'
+    else:
+        assert result['pages'][3].get('layout',{}).get('blocks',0)>0
+        assert package['pages'][3].get('structured_tables'),package['pages'][3]
     result,(md,package,entry)=cli('low_resolution_cli',fixtures/'scanned_96dpi.pdf',('--ov','--dpi','96'))
     entry['anchors_found']={value:value in md for value in truth['required_anchors']+truth['numeric_anchors']}
     # Low-resolution OCR accuracy is measured, not silently asserted perfect.
