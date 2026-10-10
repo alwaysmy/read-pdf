@@ -5,6 +5,11 @@ __pycache__/
 
 # 本机私有配置（不提交）
 engine_config.local.yaml
+readpdf.local.json
+
+# 自包含 Python 运行时（预留：解压完整 python 发行版到 runtime/python 即自包含，
+# 初始化方式见 docs/SETUP_GUIDE.md；当前本机用 readpdf.local.json 指向已有环境）
+runtime/
 engine_config.yaml
 
 # 本地测试产物（目录；bench_*.py 脚本保留提交）

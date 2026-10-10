@@ -5,7 +5,8 @@ PDF 提取 skill：文本层提取（pdfmux + pdfplumber）→ OCR 引擎（Padd
 ## 功能
 
 - **文本 PDF**：pdfmux + pdfplumber 双引擎（~0.85s/页）
-- **图像 PDF（默认）**：PaddleOCR Hybrid（版面检测 + 识别后端；**后端由配置决定**，见下表下方说明）
+- **图像 PDF（默认 OCR）**：PaddleOCR Hybrid（版面检测 + 识别后端；**后端由配置决定**，见下表下方说明）
+- **agent 原生视觉**：非文本 PDF（原理图/照片/图表，≤20 页）渲染 PNG 直读，不走 OCR/Qwen（`--render-pages`）
 - **备选 OCR**：GLM-OCR（公式/数值表格保真）、DeepSeek-OCR（纯文本扫描件提速 ~45%）
 - **版面分析**：`--layout` 定位表格/示意图 → 裁剪存图 + 布局 JSON（PP-DocLayoutV3，GPU 0.06s/页）
 - **抽取缓存**：默认开启，二次处理免 OCR（0.0s）
@@ -22,7 +23,14 @@ python scripts/extract_pdf.py book.pdf
 
 # 图像 PDF（默认 hybrid 引擎）
 python scripts/extract_pdf.py scan.pdf --pages 1-10
+
+# 非文本 PDF（原理图/照片/图表）：先渲几页分诊，≤20 页直接渲全量交 agent 原生视觉读
+python scripts/extract_pdf.py fig.pdf --render-pages --pages 1-3
+python scripts/extract_pdf.py fig.pdf --render-pages
 ```
+
+> 入口脚本按 `readpdf.json`（本机覆盖 `readpdf.local.json`）自动重定向到配置的解释器，
+> 裸 `python` 命令不会因"python 版本不对"挂掉；自检 `python scripts/readpdf_env.py check`。
 
 ## 服务模式（本体 + MCP，阶段 1）
 
@@ -61,6 +69,8 @@ python scripts/extract_pdf.py scan.pdf --source cloud
 
 引擎配置集中在 `engine_config.yaml`（本地/云双源），本机私有覆盖用 `engine_config.local.yaml`（gitignore）。详见 `docs/engine-decoupling-design_20260808.md`。
 
+**运行环境（解释器）**：入口脚本（`extract_pdf.py` / `server.py` / `mcp_server.py` / `manage_servers.py`）顶部都会按 `readpdf.json`（+ 本机私有 `readpdf.local.json`，gitignore）解析目标 Python 解释器——当前进程不是它时，自动用它重跑本脚本并透传退出码，调用方不需要关心系统里装了几个 python。优先级：显式 `python.path` > `env:READPDF_PYTHON` > `runtime/python/python.exe`（预留，解压完整 python 发行版到 `runtime/` 即自包含）> PATH 上的 python（需满足 `require`，默认 `>=3.10,<3.14`）。自检：`python scripts/readpdf_env.py check`；换环境只改 `readpdf.local.json`。
+
 **初次部署检查 `defaults.device`**：它同时决定本地 OCR 服务与 `--layout-device` 版面检测的默认设备（2026-09-30 起版面检测不再硬编码 cpu）。强卡保持默认 `gpu`；**无 GPU 的部署**在 `engine_config.local.yaml` 覆盖为 `cpu`：
 
 ```yaml
@@ -75,7 +85,8 @@ defaults:
 | 引擎 | 速度 | 公式/表格 | 定位 |
 |---|---|---|---|
 | pdfmux+pdfplumber | ~0.85s | 文本层 | 文本 PDF 默认 |
-| PaddleOCR Hybrid | ~2.5s（有能力的 GPU） | ✅ 最好 | 图像 PDF 默认 |
+| agent 原生视觉（--render-pages） | ~1s/页渲染 | agent 逐页 Read PNG | ≤20 页非文本（原理图/图表/照片）首选 |
+| PaddleOCR Hybrid | ~2.5s（有能力的 GPU） | ✅ 最好 | 文字为主的图像 PDF 默认 |
 | GLM-OCR | ~2.1s | ✅ 好（编号规范） | 公式/数值表格 |
 | DeepSeek-OCR | ~1.4s | ⚠️ 表格幻觉风险 | 纯文本扫描件提速 |
 

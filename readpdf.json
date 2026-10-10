@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "_comment": "read-pdf 运行环境配置。本机私有覆盖写 readpdf.local.json（gitignore，深合并进本文件），模式同 engine_config.yaml / engine_config.local.yaml。入口脚本（extract_pdf.py / server.py / mcp_server.py / manage_servers.py）顶部会自动按本配置重定向解释器，调用方不需要关心系统里装了几个 python。",
+  "python": {
+    "path": "auto",
+    "_path_comment": "'auto' 时按下方 auto 列表取第一个满足 require 的解释器；也可直接写解释器绝对路径（推荐写在 readpdf.local.json）",
+    "auto": [
+      "env:READPDF_PYTHON",
+      "runtime/python/python.exe",
+      "path"
+    ],
+    "_auto_comment": "auto 候选：env 环境变量 / 仓库内置 runtime（预留：把完整 python 发行版解压到 runtime/python 即自包含，见 docs/SETUP_GUIDE.md）/ PATH 上的 python",
+    "require": ">=3.10,<3.14",
+    "_require_comment": "paddlepaddle 无 3.14 wheel（OCR 引擎依赖它），文本路径不限但统一收敛到 3.10-3.13。显式 path 超出范围只告警不拦截"
+  },
+  "routing": {
+    "agent_vision_max_pages": 20,
+    "_routing_comment": "≤20 页且'文字以外信息多'（原理图/照片/图表/重版式）的非文本 PDF：渲染 PNG 交 agent 原生视觉直读，不走 OCR/Qwen。agent 无原生视觉、或需批量无人值守处理时，才用引擎（Qwen 为兜底）"
+  }
+}
