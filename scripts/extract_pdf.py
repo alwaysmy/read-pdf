@@ -2,6 +2,12 @@
 import sys, os, pathlib, argparse, tempfile, base64
 import hashlib, json, time
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from readpdf_env import ensure_interpreter
+ensure_interpreter()  # 入口自导向：当前解释器不是 readpdf.json 指定的那个时，用它重跑本脚本并透传退出码
+
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -984,6 +990,8 @@ def parse_args():
     p.add_argument("--pdfmux", action="store_true", help="Use pdfmux for text PDF structure (default: auto)")
     p.add_argument("--no-pdfmux", action="store_true", help="Disable pdfmux for text PDF")
     p.add_argument("--text-only", action="store_true", help="Text-only mode: force text engine, print bare page text to stdout (form-feed delimited, pdftotext-compatible)")
+
+    p.add_argument("--render-pages", action="store_true", help="Render selected pages to PNG for agent native vision (no OCR/Qwen engine): writes {pdf}_output/pages/pageNNNN.png + manifest with per-page text_chars/images, then agent reads the PNGs directly")
     p.add_argument("--json", action="store_true", help="Output structured JSON (prints to stdout)")
     p.add_argument("--output-dir", help="Output directory")
     p.add_argument("--batch", action="store_true", help="Send all --pages as one request (audit engine, cross-page context)")
@@ -1129,6 +1137,8 @@ def main():
         ensure_server("hybrid")  # deprecated alias → hybrid engine
     elif args.ov:
         engine = "ov"  # 本地 PP-OCRv6，无需 ensure_server
+    elif args.render_pages:
+        engine = "render"  # agent 原生视觉：只渲染 PNG，不起任何引擎/服务
     elif use_ocr:
         engine = "hybrid"  # 默认：hybrid（版面检测 + 识别后端，后端按配置解析）
         _ensure_hybrid_server()
@@ -1148,6 +1158,39 @@ def main():
                 f.write("\f")
         doc.close()
         print(f"DONE: {out_path.stat().st_size} bytes  |  {out_path}", flush=True)
+        sys.exit(0)
+
+    # --- Render mode: pages -> PNG, for agent native vision (no engine involved) ---
+    # 场景：非文本 PDF 且"文字以外信息多"（原理图/照片/图表/重版式）且页数不多时，
+    # 渲染整页交 agent 原生视觉逐页读，不走 OCR/Qwen。dpi 可用 --dpi 调（默认 150，
+    # 小字/符号密可加到 200-300）。
+    if args.render_pages:
+        out_folder, _unused, _unused_imgs = make_output_folder(pdf_path.stem, "png", args.output_dir, page_suffix)
+        render_dir = out_folder / "pages"
+        render_dir.mkdir(parents=True, exist_ok=True)
+        manifest = []
+        for page_num in page_nums:
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=args.dpi)
+            png = render_dir / f"page{page_num+1:04d}.png"
+            pix.save(str(png))
+            manifest.append({
+                "page": page_num + 1,
+                "png": str(png),
+                "text_chars": len(page.get_text().strip()),
+                "images": len(page.get_images(full=True)),
+                "bytes": png.stat().st_size,
+            })
+        stem = pdf_path.stem + (("_" + page_suffix) if page_suffix else "")
+        manifest_path = out_folder / f"{stem}_render.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        doc.close()
+        print(f"RENDER: {len(manifest)} pages (dpi={args.dpi}) -> {render_dir}", flush=True)
+        for m in manifest:
+            print(f"  page {m['page']}: text_chars={m['text_chars']} images={m['images']} "
+                  f"{m['bytes']}B  {m['png']}", flush=True)
+        print(f"MANIFEST: {manifest_path}", flush=True)
+        print("下一步：用 Read 工具逐页读上面的 PNG（agent 原生视觉直读，无需 OCR/Qwen）。", flush=True)
         sys.exit(0)
 
     # --- Layout analysis mode (P1: PP-DocLayoutV3, no OCR needed) ---

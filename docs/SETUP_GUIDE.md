@@ -1,6 +1,50 @@
 # read-pdf 新用户配置指南
 
-拿到仓库后，按本指南配置即可使用。**核心原则：代码不动，改 `engine_config.local.yaml` 指向自己的路径。**
+拿到仓库后，按本指南配置即可使用。**核心原则：代码不动，改配置文件指向自己的路径**（引擎路径改 `engine_config.local.yaml`，Python 解释器改 `readpdf.local.json`）。
+
+---
+
+## 〇、运行环境：解释器自导向（先做这步）
+
+入口脚本不依赖调用方用什么 python 启动。`extract_pdf.py` / `server.py` / `mcp_server.py` /
+`manage_servers.py` 顶部都会读 `readpdf.json`（+ 本机私有 `readpdf.local.json`，gitignore）
+解析目标解释器；当前进程不是它时，**自动用它重跑本脚本并透传退出码**。所以文档里裸
+`python scripts/extract_pdf.py ...` 的命令，用哪个 python 敲都会自己跳到配置的解释器。
+
+解析优先级（`python.path: "auto"` 时按 `python.auto` 列表取第一个满足 `require` 的）：
+
+| 顺序 | 候选 | 说明 |
+|---|---|---|
+| 1 | 环境变量 `READPDF_PYTHON` | 临时切环境用，不改文件 |
+| 2 | `readpdf.local.json` 的 `python.path`（显式路径时最高优先） | **推荐**：本机解释器写这里 |
+| 3 | `runtime/python/python.exe` | 仓库内置解释器（预留；见下方"自包含部署"） |
+| 4 | PATH 上的 `python` | 需满足 `require`（默认 `>=3.10,<3.14`，paddlepaddle 无 3.14 wheel） |
+
+本机已有装好依赖的环境（如带 paddlepaddle 的 venv），直接写 `readpdf.local.json`：
+
+```json
+{
+  "python": {
+    "path": "D:\\llm\\paddle\\py312\\Scripts\\python.exe"
+  }
+}
+```
+
+自检（换机器/环境异常时先跑）：
+
+```powershell
+python scripts/readpdf_env.py check
+```
+
+输出解析到的解释器、版本、以及 fitz/pdfplumber/pdfmux/yaml/requests 的依赖体检。
+
+### 自包含部署（可选，当前仓库未捆绑）
+
+不想依赖机器上任何 python 时：下载 CPython 3.12 完整发行版
+（[python-build-standalone](https://github.com/astral-sh/python-build-standalone/releases) 的
+`cpython-3.12*-windows-x86_64-none` zip 自带 pip），解压到仓库 `runtime/python/`（保证
+`runtime/python/python.exe` 存在），按第一节装好依赖——`readpdf.json` 的 auto 候选会自动
+优先选它，实现"clone + 解压一个 zip"即用。`runtime/` 已在 .gitignore，不进仓库。
 
 ---
 
@@ -198,7 +242,10 @@ engines:
 ## 六、验证安装
 
 ```powershell
-# 1. 引擎配置能加载（应列出 5 个引擎）
+# 1. 解释器解析 + 依赖体检（应解析到 readpdf.local.json 指定的解释器，关键依赖全 OK）
+python scripts/readpdf_env.py check
+
+# 2. 引擎配置能加载（应列出 5 个引擎）
 python -c "import sys; sys.path.insert(0,'scripts'); import engines; print(list(engines.load_config()['engines']))"
 
 # 2. 文本 PDF（不需要任何模型/GPU）

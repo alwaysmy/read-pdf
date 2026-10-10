@@ -22,6 +22,12 @@ import threading
 import time
 from urllib.parse import urlparse
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from readpdf_env import ensure_interpreter
+ensure_interpreter()  # 入口自导向：当前解释器不是 readpdf.json 指定的那个时，用它重跑本脚本并透传退出码
+
 import requests
 
 
